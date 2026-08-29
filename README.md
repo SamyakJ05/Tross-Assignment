@@ -9,7 +9,7 @@ The implementation uses two currently observed LinkedIn request families:
 - RSC profile-card streams for experience, education, and certifications.
 
 Browser DevTools was used only while developing the request contracts. The deployed API and CLI make
-ordinary HTTP requests with a session supplied through environment variables.
+ordinary HTTP requests with the two session values supplied through environment variables or the POST body.
 
 ## Assignment checklist
 
@@ -18,7 +18,7 @@ ordinary HTTP requests with a session supplied through environment variables.
 | Public HTTPS API | Render blueprint included; deploy after GitHub publication |
 | LinkedIn profile URL input | `GET /v1/profile?url=...` |
 | Structured profile JSON | Schema includes every requested profile field |
-| Own backend credentials | Environment-only LinkedIn session support |
+| Own backend credentials | Server-managed or caller-provided LinkedIn session support |
 | Public GitHub source | Local Git repository ready to push; no secrets tracked |
 | Setup, API, approach, and limitations | This README |
 
@@ -39,17 +39,16 @@ cp .env.example .env
 Configure `.env` locally. Never commit it.
 
 ```dotenv
-# Required by current RSC profile-card endpoints. Copy the complete Cookie
-# request-header value from a currently authenticated LinkedIn request.
-LINKEDIN_COOKIE_HEADER=
+# Required for server-managed GET requests.
+LINKEDIN_LI_AT=
+LINKEDIN_JSESSIONID=
 
 # Required by the HTTP API. Use a long random value.
 API_KEYS=replace-with-a-long-random-api-key
 ```
 
-`LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID` are also supported for Dash REST, but RSC card requests
-normally need the fuller `LINKEDIN_COOKIE_HEADER` context. The header must contain both `li_at` and
-`JSESSIONID`.
+The API constructs the request Cookie header from these two values. Use the POST endpoint below when each
+caller should supply their own session instead of storing one on the server.
 
 ### Run the HTTP API
 
@@ -113,29 +112,25 @@ curl -sS -X POST 'http://127.0.0.1:8000/v1/profile' \
     "url": "https://www.linkedin.com/in/example/",
     "credentials": {
       "LINKEDIN_LI_AT": "your-li-at-value",
-      "LINKEDIN_JSESSIONID": "your-jsessionid-value",
-      "LINKEDIN_COOKIE_HEADER": "your-complete-cookie-header"
+      "LINKEDIN_JSESSIONID": "your-jsessionid-value"
     }
   }'
 ```
 
-`LINKEDIN_COOKIE_HEADER` is recommended and should include `li_at`, `JSESSIONID`, and the rest of the
-Cookie header. Alternatively, provide both `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID`. Supplying all three
-is supported; the full header takes precedence when present.
+Both values are required. The API constructs the necessary Cookie header internally; do not send a complete
+browser Cookie header.
 
-#### Find the three values in Chrome
+#### Find the two values in Chrome
 
 Use only a LinkedIn account you own or are authorized to use. Never paste the values into Git, screenshots,
 issue trackers, or chat.
 
 1. Sign in to LinkedIn in Chrome and open a profile page normally.
-2. Open DevTools with `Option` + `Command` + `I`, then open **Network** and reload the page.
-3. Select a successful request to `linkedin.com`, open **Headers**, and copy the complete `cookie` request
-   header value. Use that full, single-line value for `LINKEDIN_COOKIE_HEADER`.
-4. To obtain individual values, open DevTools **Application** → **Storage** → **Cookies** →
+2. Open DevTools with `Option` + `Command` + `I`.
+3. Open **Application** → **Storage** → **Cookies** →
    `https://www.linkedin.com`. Copy the `Value` cells for `li_at` and `JSESSIONID` into
    `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID`.
-5. Send the POST request only to `https://` in a deployed environment. `http://127.0.0.1` is appropriate
+4. Send the POST request only to `https://` in a deployed environment. `http://127.0.0.1` is appropriate
    only for local testing.
 
 If LinkedIn returns `challenge_required`, `session_expired`, `unexpected_redirect`, or `request_denied`, sign
@@ -232,14 +227,15 @@ Before submitting:
 
 ## Render deployment
 
-`render.yaml` creates the web service. In the Render dashboard, set these secret environment variables:
+`render.yaml` creates the web service with only the API-access secret. The caller-provided POST flow needs
+no LinkedIn credentials on Render. Add the two optional LinkedIn secrets manually only if you later want
+the server-managed GET flow:
 
 | Secret | Required |
 |---|---:|
-| `LINKEDIN_COOKIE_HEADER` | Yes for current RSC cards |
-| `LINKEDIN_LI_AT` | Optional Dash fallback |
-| `LINKEDIN_JSESSIONID` | Optional Dash fallback |
-| `API_KEYS` | Yes |
+| `API_KEYS` | Required |
+| `LINKEDIN_LI_AT` | Optional: enables server-managed GET requests |
+| `LINKEDIN_JSESSIONID` | Optional: enables server-managed GET requests |
 
 Render supplies `PORT`; the start command binds to it automatically. The public endpoint remains protected
 by `X-API-Key`.
@@ -248,9 +244,8 @@ by `X-API-Key`.
 
 - LinkedIn endpoints are undocumented and can change without notice. The API returns typed warnings for
   redirects, checkpoints, throttling, and changed payloads.
-- A session can be challenged or rejected after an upstream sequence changes. Refresh the burner session in
-  a normal browser, then copy its full Cookie request-header value into the deployment secret. Do not add a
-  login flow to this API.
+- A session can be challenged or rejected after an upstream sequence changes. Refresh the two session values
+  in a normal browser before retrying. Do not add a login flow to this API.
 - The request-scoped credential endpoint is for controlled testing. A public deployment must use HTTPS and
   an API key; callers should provide only their own authorized session and treat it as a password.
 - Field visibility is account-, relationship-, locale-, and experiment-dependent. Missing `about`, skills,

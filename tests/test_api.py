@@ -123,7 +123,6 @@ def test_post_uses_request_scoped_credentials_without_caching(
         "credentials": {
             "LINKEDIN_LI_AT": "request-li-at",
             "LINKEDIN_JSESSIONID": "ajax:request",
-            "LINKEDIN_COOKIE_HEADER": "li_at=request-li-at; JSESSIONID=\"ajax:request\"",
         },
     }
 
@@ -133,7 +132,6 @@ def test_post_uses_request_scoped_credentials_without_caching(
     assert response.json()["cached"] is False
     assert captured[0].linkedin_li_at == "request-li-at"
     assert captured[0].linkedin_jsessionid == '"ajax:request"'
-    assert captured[0].linkedin_cookie_header.startswith("li_at=")
     assert "request-li-at" not in response.text
 
 
@@ -148,6 +146,15 @@ def test_post_rejects_incomplete_request_scoped_credentials(app_client: TestClie
     )
 
     assert response.status_code == 422
+
+
+def test_post_openapi_exposes_only_the_two_session_values(app_client: TestClient) -> None:
+    schema = app_client.get("/openapi.json").json()
+    credentials = schema["components"]["schemas"]["ProfileRequestCredentials"]
+    properties = credentials["properties"]
+
+    assert set(properties) == {"LINKEDIN_LI_AT", "LINKEDIN_JSESSIONID"}
+    assert all(value["writeOnly"] is True for value in properties.values())
 
 
 def test_slug_extracted_from_messy_url(app_client: TestClient) -> None:

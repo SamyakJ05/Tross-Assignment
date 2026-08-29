@@ -16,7 +16,6 @@ systems in this space actually do.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 
 from app.config import Settings
@@ -26,18 +25,12 @@ WWW_BASE = "https://www.linkedin.com"
 
 
 class Session:
-    """Holds the harvested cookies and builds request headers from them."""
+    """Holds the two required session cookies and builds request headers."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._cookie_header = settings.linkedin_cookie_header.strip()
-        self._li_at = self._cookie_value("li_at") or settings.linkedin_li_at
-        self._jsessionid = self._cookie_value("JSESSIONID") or settings.linkedin_jsessionid
-
-    def _cookie_value(self, name: str) -> str:
-        """Read one cookie from an injected Cookie header without logging it."""
-        match = re.search(rf"(?:^|;\s*){re.escape(name)}=(\"[^\"]*\"|[^;]*)", self._cookie_header)
-        return match.group(1).strip() if match else ""
+        self._li_at = settings.linkedin_li_at
+        self._jsessionid = settings.linkedin_jsessionid
 
     # -- identity ---------------------------------------------------------
 
@@ -66,14 +59,11 @@ class Session:
         return self._jsessionid.strip('"')
 
     def cookie_header(self) -> str:
-        """Cookie header, byte-identical to a browser's.
+        """Construct the two cookies required by the direct endpoints.
 
         JSESSIONID keeps its literal double quotes here; only the derived
-        csrf-token drops them. Sending an unquoted JSESSIONID cookie is a
-        subtle mismatch against what a real client sends.
+        csrf-token drops them.
         """
-        if self._cookie_header:
-            return self._cookie_header
         return f"li_at={self._li_at}; JSESSIONID={self._jsessionid}"
 
     # -- headers ----------------------------------------------------------

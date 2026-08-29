@@ -29,6 +29,10 @@ async def test_terminal_section_error_stops_remaining_requests(
 
     monkeypatch.setattr(fetchers, "resolve_urn", fake_resolve)
     monkeypatch.setattr(fetchers, "_fetch_section", fake_section)
+    async def fake_rsc(*_: object) -> list[object]:
+        return []
+
+    monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
     monkeypatch.setattr(
         fetchers,
         "configured_profile_components_query",
@@ -40,7 +44,11 @@ async def test_terminal_section_error_stops_remaining_requests(
         ),
     )
 
-    settings = Settings(linkedin_profile_components_query_id="current", linkedin_cookie_header="")
+    settings = Settings(
+        linkedin_li_at="fixture",
+        linkedin_jsessionid="ajax:123",
+        linkedin_profile_components_query_id="current",
+    )
     await fetchers._fetch_authenticated(
         type("Client", (), {"settings": settings})(),
         "fixture-person",
@@ -49,10 +57,7 @@ async def test_terminal_section_error_stops_remaining_requests(
     )
 
     assert attempts == ["section"]
-    assert [warning.code for warning in result.warnings] == [
-        "rsc_cookie_context_required",
-        "unexpected_redirect",
-    ]
+    assert [warning.code for warning in result.warnings] == ["unexpected_redirect"]
 
 
 @pytest.mark.asyncio
@@ -82,7 +87,8 @@ async def test_rsc_data_survives_a_dash_resolver_redirect(
     monkeypatch.setattr(fetchers, "resolve_urn", fake_resolve)
 
     settings = Settings(
-        linkedin_cookie_header="li_at=example; JSESSIONID=\"ajax:123\"",
+        linkedin_li_at="example",
+        linkedin_jsessionid="ajax:123",
         linkedin_profile_components_query_id="",
     )
     await fetchers._fetch_authenticated(

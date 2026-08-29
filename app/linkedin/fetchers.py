@@ -157,31 +157,23 @@ async def _fetch_authenticated(
     # The modern profile UI no longer uses the old GraphQL component query.
     # These cards need only the vanity slug, so they remain available when
     # Dash fails for an otherwise valid session.
-    if client.settings.linkedin_cookie_header:
-        components = (
-            ("experience", PROFILE_CARDS_EXPERIENCE),
-            ("above_activity", PROFILE_CARDS_ABOVE_ACTIVITY),
-            ("below_activity", PROFILE_CARDS_BELOW_ACTIVITY),
-        )
-        for section, component in components:
-            try:
-                frames = await fetch_profile_component(client, slug, component)
-                values = visible_strings(frames)
-            except LinkedInError as exc:
-                result.warn(exc.code, f"RSC {section} fetch failed: {exc.message}", section)
-                if exc.tier_fatal:
-                    return
-                continue
-            if values:
-                result.rsc_sections[section] = values
-                result.record(section, Tier.LINKEDIN_RSC, count=len(values))
-    else:
-        result.warn(
-            "rsc_cookie_context_required",
-            "The current direct Experience endpoint requires LINKEDIN_COOKIE_HEADER; "
-            "the legacy GraphQL fallback remains disabled until independently verified.",
-            "experience",
-        )
+    components = (
+        ("experience", PROFILE_CARDS_EXPERIENCE),
+        ("above_activity", PROFILE_CARDS_ABOVE_ACTIVITY),
+        ("below_activity", PROFILE_CARDS_BELOW_ACTIVITY),
+    )
+    for section, component in components:
+        try:
+            frames = await fetch_profile_component(client, slug, component)
+            values = visible_strings(frames)
+        except LinkedInError as exc:
+            result.warn(exc.code, f"RSC {section} fetch failed: {exc.message}", section)
+            if exc.tier_fatal:
+                return
+            continue
+        if values:
+            result.rsc_sections[section] = values
+            result.record(section, Tier.LINKEDIN_RSC, count=len(values))
 
     # --- per-section GraphQL --------------------------------------------
     if urn is None:

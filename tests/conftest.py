@@ -29,7 +29,6 @@ def settings() -> Settings:
     return Settings(
         linkedin_li_at="AQEDTESTTESTTESTTESTTESTTESTTEST",
         linkedin_jsessionid='"ajax:1111111111111111111"',
-        linkedin_cookie_header="",
         api_keys="test-key-one,test-key-two",
         cache_ttl_seconds=60,
         min_request_interval_seconds=0.0,
@@ -42,7 +41,6 @@ def anon_settings() -> Settings:
     return Settings(
         linkedin_li_at="",
         linkedin_jsessionid="",
-        linkedin_cookie_header="",
         api_keys="test-key-one",
         min_request_interval_seconds=0.0,
     )

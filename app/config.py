@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     # --- LinkedIn session -------------------------------------------------
     linkedin_li_at: str = ""
     linkedin_jsessionid: str = ""
-    linkedin_cookie_header: str = ""
     linkedin_profile_components_query_id: str = ""
     linkedin_profile_components_verified_on: date | None = None
     linkedin_rsc_application_version: str = "0.2.7003"
@@ -56,7 +55,7 @@ class Settings(BaseSettings):
         """JSESSIONID carries literal double quotes in the cookie value.
 
         Some shells and secret managers strip them on the way in. We restore
-        them here so the cookie header is byte-identical to a browser's, and
+        them here so the constructed cookie header preserves LinkedIn's expected quoting, and
         derive the unquoted csrf-token separately in the session layer.
         """
         if not v:
@@ -77,11 +76,7 @@ class Settings(BaseSettings):
         False is a supported operating mode: the service still answers from
         the public fallback tier, and says so in the response envelope.
         """
-        if self.linkedin_li_at and self.linkedin_jsessionid:
-            return True
-        return (
-            "li_at=" in self.linkedin_cookie_header and "JSESSIONID=" in self.linkedin_cookie_header
-        )
+        return bool(self.linkedin_li_at and self.linkedin_jsessionid)
 
 
 @lru_cache

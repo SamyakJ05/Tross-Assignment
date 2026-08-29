@@ -11,12 +11,6 @@ services:
     envVars:
       # Every secret is set in the Render dashboard, never in this file.
       # sync: false keeps them out of the repo and out of blueprint syncs.
-      - key: LINKEDIN_LI_AT
-        sync: false
-      - key: LINKEDIN_JSESSIONID
-        sync: false
-      - key: LINKEDIN_COOKIE_HEADER
-        sync: false
       - key: API_KEYS
         sync: false
 

@@ -35,24 +35,9 @@ def test_quotes_restored_when_environment_strips_them() -> None:
     s = Settings(
         linkedin_li_at="",
         linkedin_jsessionid="ajax:2222222222222222222",
-        linkedin_cookie_header="",
     )
     assert s.linkedin_jsessionid == '"ajax:2222222222222222222"'
     assert Session(s).csrf_token == "ajax:2222222222222222222"
-
-
-def test_complete_cookie_header_supplies_the_authenticated_session() -> None:
-    settings = Settings(
-        linkedin_cookie_header=(
-            'li_at=AQEDTEST; other=value; JSESSIONID="ajax:2222222222222222222"'
-        )
-    )
-    session = Session(settings)
-
-    assert settings.has_session is True
-    assert session.is_authenticated is True
-    assert session.csrf_token == "ajax:2222222222222222222"
-    assert session.cookie_header() == settings.linkedin_cookie_header
 
 
 def test_required_headers_present(settings: Settings) -> None:
