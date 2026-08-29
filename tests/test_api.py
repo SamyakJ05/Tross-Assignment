@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.linkedin.errors import ChallengeRequired, NotFound, RequestDenied, UnexpectedRedirect
 from app.models.domain import Profile
 from app.models.envelope import Completeness, ProfileResponse, SectionSource, Tier
+from app.ratelimit import reset_rate_limiter
 
 HEADERS = {"X-API-Key": "test-key-one"}
 
@@ -27,8 +28,13 @@ def app_client(monkeypatch: pytest.MonkeyPatch, settings: Settings):
     import app.main as main
 
     monkeypatch.setattr(main, "settings", get_settings())
+    # The rate limiter's counters are process-wide, not per-app-instance, so
+    # every test that reuses HEADERS's key must start from a clean budget.
+    reset_rate_limiter()
 
-    async def fake_get_profile(slug: str, _settings: Settings) -> ProfileResponse:
+    async def fake_get_profile(
+        slug: str, _settings: Settings, **_kwargs: object
+    ) -> ProfileResponse:
         return ProfileResponse(
             profile=Profile(
                 public_identifier=slug,
@@ -45,6 +51,7 @@ def app_client(monkeypatch: pytest.MonkeyPatch, settings: Settings):
         yield client
 
     get_settings.cache_clear()
+    reset_rate_limiter()
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +117,9 @@ def test_post_uses_request_scoped_credentials_without_caching(
 
     captured: list[Settings] = []
 
-    async def capture_settings(slug: str, request_settings: Settings) -> ProfileResponse:
+    async def capture_settings(
+        slug: str, request_settings: Settings, **_kwargs: object
+    ) -> ProfileResponse:
         captured.append(request_settings)
         return ProfileResponse(
             profile=Profile(public_identifier=slug),
@@ -225,7 +234,7 @@ def test_degraded_refresh_does_not_replace_a_better_cached_response(
     )
     responses = iter((complete, degraded))
 
-    async def sequential_get_profile(*_: object) -> ProfileResponse:
+    async def sequential_get_profile(*_args: object, **_kwargs: object) -> ProfileResponse:
         return next(responses)
 
     monkeypatch.setattr(main, "get_profile", sequential_get_profile)
@@ -282,7 +291,7 @@ def test_upstream_errors_map_to_sensible_statuses(
     """
     import app.main as main
 
-    async def failing(slug: str, _settings) -> ProfileResponse:
+    async def failing(slug: str, _settings, **_kwargs: object) -> ProfileResponse:
         raise error
 
     monkeypatch.setattr(main, "get_profile", failing)
@@ -321,3 +330,87 @@ def test_health_leaks_no_secrets(app_client: TestClient) -> None:
     raw = app_client.get("/v1/health").text
     assert "AQEDTEST" not in raw
     assert "ajax:" not in raw
+
+
+# ---------------------------------------------------------------------------
+# Per-key rate limiting
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_returns_429_after_the_configured_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One key cannot consume more than its own share of the LinkedIn-facing budget."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("API_KEYS", "limit-test-key")
+    monkeypatch.setenv("LINKEDIN_LI_AT", "AQEDTEST")
+    monkeypatch.setenv("LINKEDIN_JSESSIONID", '"ajax:1111111111111111111"')
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
+
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", get_settings())
+    reset_rate_limiter()
+
+    async def fake_get_profile(
+        slug: str, _settings: Settings, **_kwargs: object
+    ) -> ProfileResponse:
+        return ProfileResponse(
+            profile=Profile(public_identifier=slug), completeness=Completeness.PARTIAL
+        )
+
+    monkeypatch.setattr(main, "get_profile", fake_get_profile)
+
+    headers = {"X-API-Key": "limit-test-key"}
+    params = {"url": "https://www.linkedin.com/in/rate-limit-test/"}
+
+    with TestClient(main.app) as client:
+        first = client.get("/v1/profile", params=params, headers=headers)
+        second = client.get("/v1/profile", params=params, headers=headers)
+        third = client.get("/v1/profile", params=params, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert "Retry-After" in third.headers
+
+    get_settings.cache_clear()
+    reset_rate_limiter()
+
+
+def test_rate_limit_is_scoped_per_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second caller's key must not be charged against the first caller's budget."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("API_KEYS", "key-a,key-b")
+    monkeypatch.setenv("LINKEDIN_LI_AT", "AQEDTEST")
+    monkeypatch.setenv("LINKEDIN_JSESSIONID", '"ajax:1111111111111111111"')
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
+
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", get_settings())
+    reset_rate_limiter()
+
+    async def fake_get_profile(
+        slug: str, _settings: Settings, **_kwargs: object
+    ) -> ProfileResponse:
+        return ProfileResponse(
+            profile=Profile(public_identifier=slug), completeness=Completeness.PARTIAL
+        )
+
+    monkeypatch.setattr(main, "get_profile", fake_get_profile)
+    params = {"url": "https://www.linkedin.com/in/rate-limit-scope-test/"}
+
+    with TestClient(main.app) as client:
+        a_first = client.get("/v1/profile", params=params, headers={"X-API-Key": "key-a"})
+        a_second = client.get("/v1/profile", params=params, headers={"X-API-Key": "key-a"})
+        b_first = client.get("/v1/profile", params=params, headers={"X-API-Key": "key-b"})
+
+    assert a_first.status_code == 200
+    assert a_second.status_code == 429
+    assert b_first.status_code == 200
+
+    get_settings.cache_clear()
+    reset_rate_limiter()

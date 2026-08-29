@@ -67,6 +67,11 @@ curl -s \
 Use `refresh=true` only when deliberately making a new upstream request. Normal requests use the
 15-minute in-memory cache. A lower-quality refresh result never overwrites a stronger cached result.
 
+One `Pacer` (see `app/linkedin/client.py`) is shared by every request the process handles, so the
+minimum-interval throttle to LinkedIn is process-wide rather than reset per request. Independently,
+each `X-API-Key` gets its own request budget (`RATE_LIMIT_PER_MINUTE`, default 20/minute) so one
+caller cannot consume the whole shared LinkedIn-facing budget alone.
+
 ### Run the CLI
 
 The CLI uses the same direct-HTTP service but does not require an API key because it is local.
@@ -194,8 +199,11 @@ registry status. It does not expose session values or API keys.
 2. Attempt Dash REST first for the top card. This preserves the tested identity request order before
    detailed cards are requested.
 3. Request three RSC profile cards directly over HTTP: experience, above activity, and below activity.
+   Separately, fetch the `/details/skills` sub-page's own RSC pagination action -- a different action
+   shape (`actions/pagination`, not `actions/component`) that the GraphQL components query used to cover
+   before LinkedIn stopped calling it (see step 5).
 4. Parse visible card strings into grouped positions, education, and certifications without fabricating
-   unavailable values.
+   unavailable values. Parse skill names from the pagination stream's endorse-button labels.
 5. Optionally use a configured GraphQL query as a compatibility path for additional sections.
 6. Return source provenance, warnings, and a completeness state with the normalized profile.
 
@@ -255,6 +263,20 @@ by `X-API-Key`.
 - The in-memory cache is intentionally short-lived and per-process. It is not a persistent profile database.
 - A cloud IP can receive LinkedIn HTTP 999 or a checkpoint even when the same session works locally. The
   API surfaces that as a typed response instead of parsing an error page as profile data.
+- The GraphQL tier (`app/linkedin/queries.py`) ships with every `query_id` blank, and evidence from live
+  capture is that LinkedIn's current profile UI no longer calls the old `profileComponents` query at
+  all -- it has moved to per-section RSC pagination actions instead, the same way experience and
+  education already work in this codebase. Skills now has its own RSC path (`app/linkedin/rsc.py`'s
+  `fetch_skills`/`skill_names`, keyed off the member's `profileId` rather than the vanity slug).
+  Languages, projects, honors, publications, and volunteer experience still have no working source and
+  will be empty for every profile; each would need its own `/details/<section>` pagination action
+  captured from DevTools the same way skills was, since the GraphQL route they were meant to use is
+  believed dead. Education and certifications are still partially covered by the RSC below-activity
+  card's regex heuristics in the meantime.
+- The skills RSC path fetches only the first 50 skills in one page (no multi-page crawl) and cannot
+  recover endorsement counts -- those require a different response shape than what's captured today. A
+  profile with more than 50 skills will show only the first 50, and endorsement counts will always be
+  `null` regardless of visibility.
 
 ## Security
 

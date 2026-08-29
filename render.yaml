@@ -24,3 +24,7 @@ services:
         value: "true"
       - key: LOG_LEVEL
         value: "INFO"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: "60"

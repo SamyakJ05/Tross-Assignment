@@ -635,6 +635,19 @@ def apply_rsc_below_activity(profile: Profile, values: list[str]) -> Profile:
     return profile
 
 
+def apply_rsc_skills(profile: Profile, names: list[str]) -> Profile:
+    """Attach skills discovered via the details/skills pager.
+
+    Endorsement counts are not available through this path (see rsc.py's
+    skill_names), unlike the GraphQL tier's map_skills. A later GraphQL
+    section fetch, if one is ever configured again, still wins on conflict
+    because this only fills an empty list.
+    """
+    if not profile.skills:
+        profile.skills = [Skill(name=name) for name in names]
+    return profile
+
+
 def _dedupe_certifications(values: list[Certification]) -> list[Certification]:
     seen: set[tuple[str | None, str | None]] = set()
     return [

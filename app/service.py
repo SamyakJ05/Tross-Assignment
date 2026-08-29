@@ -9,13 +9,14 @@ import logging
 import time
 
 from app.config import Settings
-from app.linkedin.client import LinkedInClient
+from app.linkedin.client import LinkedInClient, Pacer
 from app.linkedin.fetchers import extract_jsonld, fetch_profile
 from app.models.domain import Profile
 from app.models.envelope import ProfileResponse, assess
 from app.parsing.mappers import (
     apply_rsc_below_activity,
     apply_rsc_experience,
+    apply_rsc_skills,
     apply_sections,
     map_jsonld,
     map_top_card,
@@ -25,10 +26,19 @@ from app.parsing.mappers import (
 log = logging.getLogger(__name__)
 
 
-async def get_profile(slug: str, settings: Settings) -> ProfileResponse:
+async def get_profile(
+    slug: str, settings: Settings, *, pacer: Pacer | None = None
+) -> ProfileResponse:
+    """Fetch and assemble one profile.
+
+    `pacer` is optional only for callers that genuinely make one isolated
+    fetch, like the CLI. A long-running server must pass the same `Pacer`
+    into every call so the request budget is shared across concurrent
+    callers rather than reset per request; see `app/main.py`.
+    """
     started = time.perf_counter()
 
-    async with LinkedInClient(settings) as client:
+    async with LinkedInClient(settings, pacer=pacer) as client:
         raw = await fetch_profile(client, slug)
 
     profile: Profile | None = None
@@ -54,6 +64,8 @@ async def get_profile(slug: str, settings: Settings) -> ProfileResponse:
         profile = apply_rsc_experience(profile, raw.rsc_sections["experience"])
     if profile and raw.rsc_sections.get("below_activity"):
         profile = apply_rsc_below_activity(profile, raw.rsc_sections["below_activity"])
+    if profile and raw.rsc_sections.get("skills"):
+        profile = apply_rsc_skills(profile, raw.rsc_sections["skills"])
 
     # Public tier fills gaps, or stands alone if nothing else answered.
     if raw.public_html:

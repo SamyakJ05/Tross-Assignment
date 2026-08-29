@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     enable_public_fallback: bool = True
     log_level: str = "INFO"
 
+    # --- Per-caller rate limiting -----------------------------------------
+    # The Pacer above throttles this process's total outbound volume to
+    # LinkedIn; it does not stop one caller from consuming that entire
+    # shared budget alone by requesting many distinct profiles. This caps
+    # each API key independently.
+    rate_limit_per_minute: int = 20
+    rate_limit_window_seconds: float = 60.0
+
     # --- Client identity --------------------------------------------------
     # Kept in config rather than hardcoded because it is a maintenance
     # surface: it drifts with LinkedIn's real client and a stale value is a

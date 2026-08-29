@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.auth import require_api_key
 from app.cache import TTLCache
 from app.config import get_settings
+from app.linkedin.client import Pacer
 from app.linkedin.errors import (
     ChallengeRequired,
     LinkedInError,
@@ -22,6 +23,7 @@ from app.linkedin.queries import registry_status
 from app.linkedin.resolver import InvalidProfileURL, extract_slug
 from app.models.envelope import ProfileResponse
 from app.models.requests import ProfileRequestWithCredentials
+from app.ratelimit import enforce_rate_limit
 from app.service import get_profile
 
 settings = get_settings()
@@ -44,6 +46,12 @@ app = FastAPI(
 )
 
 _cache: TTLCache[ProfileResponse] = TTLCache(settings.cache_ttl_seconds)
+# One Pacer for the whole process, shared by every request regardless of
+# which session (server-managed or caller-supplied) it uses. LinkedIn's
+# reputation signal is per outbound IP, not per session, so pacing must be
+# global here rather than reset for each incoming request. See Pacer's
+# docstring in app/linkedin/client.py.
+_pacer = Pacer(settings.min_request_interval_seconds)
 
 
 def _response_quality(response: ProfileResponse) -> int:
@@ -91,7 +99,7 @@ async def _linkedin_error_handler(_, exc: LinkedInError) -> JSONResponse:
 @app.get(
     "/v1/profile",
     response_model=ProfileResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
     summary="Fetch a LinkedIn profile as structured JSON",
 )
 async def profile(
@@ -120,7 +128,7 @@ async def profile(
     if cached is not None and not refresh:
         return cached.model_copy(update={"cached": True})
 
-    result = await get_profile(slug, settings)
+    result = await get_profile(slug, settings, pacer=_pacer)
     if cached is None or _response_quality(result) >= _response_quality(cached):
         await _cache.set(slug, result)
     return result
@@ -129,7 +137,7 @@ async def profile(
 @app.post(
     "/v1/profile",
     response_model=ProfileResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
     summary="Fetch a LinkedIn profile with caller-provided credentials",
 )
 async def profile_with_credentials(payload: ProfileRequestWithCredentials) -> ProfileResponse:
@@ -142,7 +150,7 @@ async def profile_with_credentials(payload: ProfileRequestWithCredentials) -> Pr
             detail=str(exc),
         ) from exc
 
-    return await get_profile(slug, payload.credentials.apply_to(settings))
+    return await get_profile(slug, payload.credentials.apply_to(settings), pacer=_pacer)
 
 
 @app.delete(

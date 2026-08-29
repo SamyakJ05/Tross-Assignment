@@ -11,10 +11,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.linkedin.fetchers import extract_jsonld
-from app.models.domain import Profile
+from app.models.domain import Profile, Skill
 from app.parsing.mappers import (
     apply_rsc_below_activity,
     apply_rsc_experience,
+    apply_rsc_skills,
     map_education,
     map_experience,
     map_jsonld,
@@ -295,6 +296,19 @@ def test_hidden_endorsements_are_none_not_zero(skills: dict[str, Any]) -> None:
 def test_skills_deduplicated(skills: dict[str, Any]) -> None:
     names = [s.name for s in map_skills(skills)]
     assert len(names) == len(set(names))
+
+
+def test_apply_rsc_skills_fills_an_empty_list() -> None:
+    profile = Profile(public_identifier="x")
+    mapped = apply_rsc_skills(profile, ["Node.js", "Scrum"])
+    assert [s.name for s in mapped.skills] == ["Node.js", "Scrum"]
+    assert mapped.skills[0].endorsement_count is None
+
+
+def test_apply_rsc_skills_does_not_overwrite_a_richer_tier() -> None:
+    profile = Profile(public_identifier="x", skills=[Skill(name="Python", endorsement_count=9)])
+    mapped = apply_rsc_skills(profile, ["Node.js"])
+    assert [s.name for s in mapped.skills] == ["Python"]
 
 
 # ---------------------------------------------------------------------------

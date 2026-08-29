@@ -17,6 +17,7 @@ from app.linkedin.client import LinkedInClient
 from app.linkedin.errors import UnexpectedPayload
 
 RSC_COMPONENT_URL = "https://www.linkedin.com/flagship-web/rsc-action/actions/component"
+RSC_PAGINATION_URL = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination"
 PROFILE_CARDS_ABOVE_ACTIVITY = (
     "com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity"
 )
@@ -24,6 +25,7 @@ PROFILE_CARDS_EXPERIENCE = "com.linkedin.sdui.generated.profile.dsl.impl.profile
 PROFILE_CARDS_BELOW_ACTIVITY = (
     "com.linkedin.sdui.generated.profile.dsl.impl.profileCardsBelowActivityPart1WithoutExp"
 )
+SKILLS_PAGER_ID = "com.linkedin.sdui.pagers.profile.details.skills"
 
 
 def _base64_token(byte_count: int = 16) -> str:
@@ -142,6 +144,171 @@ async def fetch_profile_component(
         },
     )
     return decode_flight_frames(raw)
+
+
+# ---------------------------------------------------------------------------
+# Skills: a paginated list, not a card
+#
+# The profile-components GraphQL query that used to carry skills no longer
+# fires at all (see app/linkedin/queries.py); LinkedIn's current /details
+# sub-pages fetch their own paginated RSC data instead. This is a different
+# action shape than the cards above -- a pagination request keyed by the
+# member's numeric profileId (the tail of the fsd_profile URN already
+# resolved elsewhere), not the vanity slug alone.
+# ---------------------------------------------------------------------------
+
+
+def _skill_pager_payload(slug: str, profile_id: str, *, start: int, count: int) -> dict[str, Any]:
+    payload = {
+        "vanityName": slug,
+        "profileId": profile_id,
+        "start": start,
+        "count": count,
+        "filter": "ProfileSkillCategory_ALL",
+    }
+    request_metadata = {"$type": "proto.sdui.common.RequestMetadata"}
+    return {
+        "pagerId": SKILLS_PAGER_ID,
+        "clientArguments": {
+            "$type": "proto.sdui.actions.requests.RequestedArguments",
+            "requestedStateKeys": [],
+            "payload": payload,
+            "requestMetadata": request_metadata,
+            "states": [],
+            "screenId": "com.linkedin.sdui.flagshipnav.profile.ProfileSkillDetails",
+            "knownTemplateIds": [],
+        },
+        "paginationRequest": {
+            "$type": "proto.sdui.actions.requests.PaginationRequest",
+            "pagerId": SKILLS_PAGER_ID,
+            "trigger": {
+                "$case": "itemDistanceTrigger",
+                "itemDistanceTrigger": {
+                    "$type": "proto.sdui.actions.requests.ItemDistanceTrigger",
+                    "preloadDistance": 3,
+                    "preloadLength": 250,
+                },
+            },
+            "retryCount": 2,
+            "requestedArguments": {
+                "$type": "proto.sdui.actions.requests.RequestedArguments",
+                "requestedStateKeys": [],
+                "payload": payload,
+                "requestMetadata": request_metadata,
+            },
+        },
+    }
+
+
+def _skills_pagination_headers(client: LinkedInClient, slug: str) -> dict[str, str]:
+    """Like rsc_headers, but scoped to the /details/skills sub-page.
+
+    The anchor page key changes to match ("..._skills_details"), and the
+    referer points at the detail sub-page rather than the profile root --
+    both are conspicuous if wrong, same as everything else in rsc_headers.
+    """
+    settings = client.settings
+    trace_id = secrets.token_hex(16)
+    span_id = secrets.token_hex(8)
+    page_tracking_id = _base64_token()
+    version = settings.linkedin_rsc_application_version
+    anchor_page_key = "d_flagship3_profile_view_base_skills_details"
+    track = {
+        "clientVersion": version,
+        "mpVersion": version,
+        "osName": "web",
+        "timezoneOffset": 5.5,
+        "timezone": "Asia/Calcutta",
+        "deviceFormFactor": "DESKTOP",
+        "mpName": "web",
+        "displayDensity": 2,
+        "displayWidth": 3024,
+        "displayHeight": 1964,
+    }
+    return {
+        "cookie": client.session.cookie_header(),
+        "csrf-token": client.session.csrf_token,
+        "accept": "*/*",
+        "content-type": "application/json",
+        "origin": "https://www.linkedin.com",
+        "referer": f"https://www.linkedin.com/in/{slug}/details/skills/",
+        "user-agent": settings.user_agent,
+        "accept-language": "en-US,en;q=0.9",
+        "x-li-rsc-stream": "true",
+        "x-li-application-version": version,
+        "x-li-page-instance-tracking-id": page_tracking_id,
+        "x-li-page-instance": f"urn:li:page:{anchor_page_key};{page_tracking_id}",
+        "x-li-anchor-page-key": anchor_page_key,
+        "x-li-pageforestid": trace_id,
+        "x-li-application-instance": _base64_token(),
+        "x-li-track": json.dumps(track, separators=(",", ":")),
+        "x-li-traceparent": f"00-{trace_id}-{span_id}-00",
+        "x-li-tracestate": f"LinkedIn={span_id}",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }
+
+
+async def fetch_skills(
+    client: LinkedInClient,
+    slug: str,
+    profile_id: str,
+    *,
+    count: int = 50,
+) -> list[Any]:
+    """Fetch and decode the skills detail page's first page of results.
+
+    Only the first `count` skills are fetched -- a profile with more than
+    that is truncated rather than paginated further, consistent with this
+    module treating each lookup as a single request rather than a crawl.
+    """
+    raw = await client.post_stream(
+        RSC_PAGINATION_URL,
+        headers=_skills_pagination_headers(client, slug),
+        payload=_skill_pager_payload(slug, profile_id, start=0, count=count),
+        params={
+            "sduiid": SKILLS_PAGER_ID,
+            "parentSpanId": _base64_token(8),
+        },
+    )
+    return decode_flight_frames(raw)
+
+
+_ENDORSE_ARIA_RE = re.compile(r"^Endorse\s+(.+)$")
+
+
+def skill_names(frames: list[Any]) -> list[str]:
+    """Skill names from the pagination stream.
+
+    Each skill entity carries an endorse-button `aria-label` of the form
+    "Endorse <skill name>", present regardless of viewer relationship or
+    endorsement visibility. That is a more reliable anchor than the plain
+    display text, which lives in a separately-referenced frame this walk
+    does not need to resolve.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            aria = value.get("aria-label")
+            if isinstance(aria, str):
+                match = _ENDORSE_ARIA_RE.match(aria)
+                if match:
+                    name = match.group(1).strip()
+                    if name and name not in seen:
+                        seen.add(name)
+                        found.append(name)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    for frame in frames:
+        walk(frame)
+    return found
 
 
 def decode_flight_frames(raw: bytes) -> list[Any]:

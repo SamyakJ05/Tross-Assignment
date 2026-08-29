@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.config import Settings
+from app.linkedin.client import LinkedInClient, Pacer
 from app.linkedin.fetchers import FetchResult
 from app.models.envelope import Completeness, SectionSource, Tier
 from app.service import get_profile
@@ -80,3 +81,35 @@ async def test_service_returns_rsc_experience_when_dash_identity_is_unavailable(
 
     assert response.profile.positions[0].title == "Software Engineer"
     assert response.completeness is Completeness.NEEDS_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_get_profile_forwards_an_explicit_pacer_to_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+) -> None:
+    """A server must be able to share one request budget across every call.
+
+    Without this, a fresh LinkedInClient (and therefore a fresh Pacer) built
+    per request paces requests only within that single fetch, not across
+    concurrent fetches -- see Pacer's docstring in app/linkedin/client.py.
+    """
+    shared_pacer = Pacer(settings.min_request_interval_seconds)
+    seen_pacers: list[Pacer | None] = []
+
+    real_init = LinkedInClient.__init__
+
+    def capturing_init(self, settings, session=None, pacer=None):
+        seen_pacers.append(pacer)
+        real_init(self, settings, session, pacer)
+
+    monkeypatch.setattr(LinkedInClient, "__init__", capturing_init)
+
+    async def fake_fetch_profile(*_: object) -> FetchResult:
+        return FetchResult()
+
+    monkeypatch.setattr("app.service.fetch_profile", fake_fetch_profile)
+
+    await get_profile("fixture-person", settings, pacer=shared_pacer)
+
+    assert seen_pacers == [shared_pacer]

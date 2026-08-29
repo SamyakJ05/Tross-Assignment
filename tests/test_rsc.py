@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.linkedin.rsc import (
     decode_flight_frames,
     profile_component_payload,
+    skill_names,
     text_fragments,
     visible_strings,
 )
@@ -36,3 +37,52 @@ def test_visible_strings_excludes_framework_values() -> None:
     ]
 
     assert visible_strings(frames) == ["Engineer at Northwind"]
+
+
+# ---------------------------------------------------------------------------
+# Skills pagination stream
+#
+# Live shape: each skill entity carries an endorse button whose
+# aria-label is "Endorse <skill name>", nested several levels deep
+# alongside a lot of unrelated SDUI scaffolding (tracking specs, trigger
+# actions, className strings). skill_names must find just the skill names.
+# ---------------------------------------------------------------------------
+
+
+def test_skill_names_extracted_from_endorse_button_aria_labels() -> None:
+    frames = [
+        {
+            "componentKey": "com.linkedin.sdui.profile.skill(ACoAA..., 111)",
+            "children": {
+                "buttonProps": {
+                    "text": ["Endorse"],
+                    "aria-label": "Endorse Node.js",
+                },
+                "className": "aa13b50b _8cd77912",
+            },
+        },
+        [
+            {
+                "componentKey": "com.linkedin.sdui.profile.skill(ACoAA..., 222)",
+                "buttonProps": {"aria-label": "Endorse Scrum"},
+            }
+        ],
+    ]
+
+    assert skill_names(frames) == ["Node.js", "Scrum"]
+
+
+def test_skill_names_deduplicates_repeated_entities() -> None:
+    """The multi-path SDUI tree can reach the same entity more than once."""
+    frames = [
+        {"buttonProps": {"aria-label": "Endorse Kubernetes"}},
+        {"other": {"buttonProps": {"aria-label": "Endorse Kubernetes"}}},
+    ]
+
+    assert skill_names(frames) == ["Kubernetes"]
+
+
+def test_skill_names_ignores_unrelated_aria_labels() -> None:
+    frames = [{"aria-label": "Open profile photo"}, {"aria-label": "Endorse Python"}]
+
+    assert skill_names(frames) == ["Python"]

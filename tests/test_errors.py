@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.linkedin.client import LinkedInClient
+from app.linkedin.client import LinkedInClient, Pacer
 from app.linkedin.errors import (
     ChallengeRequired,
     NotFound,
@@ -43,6 +43,30 @@ def _response(
 @pytest.fixture
 def client(settings: Settings) -> LinkedInClient:
     return LinkedInClient(settings)
+
+
+# ---------------------------------------------------------------------------
+# Pacer sharing
+#
+# A LinkedInClient built without an explicit pacer only paces requests
+# within its own lifetime. A server handling concurrent requests must share
+# one Pacer across every client it builds for the request budget to be
+# process-wide rather than reset per request.
+# ---------------------------------------------------------------------------
+
+
+def test_client_without_a_pacer_builds_its_own(settings: Settings) -> None:
+    a = LinkedInClient(settings)
+    b = LinkedInClient(settings)
+    assert a._pacer is not b._pacer
+
+
+def test_client_reuses_an_externally_provided_pacer(settings: Settings) -> None:
+    shared = Pacer(settings.min_request_interval_seconds)
+    a = LinkedInClient(settings, pacer=shared)
+    b = LinkedInClient(settings, pacer=shared)
+    assert a._pacer is shared
+    assert b._pacer is shared
 
 
 # ---------------------------------------------------------------------------

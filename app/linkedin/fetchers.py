@@ -40,6 +40,8 @@ from app.linkedin.rsc import (
     PROFILE_CARDS_BELOW_ACTIVITY,
     PROFILE_CARDS_EXPERIENCE,
     fetch_profile_component,
+    fetch_skills,
+    skill_names,
     visible_strings,
 )
 from app.linkedin.session import VOYAGER_BASE
@@ -174,6 +176,22 @@ async def _fetch_authenticated(
         if values:
             result.rsc_sections[section] = values
             result.record(section, Tier.LINKEDIN_RSC, count=len(values))
+
+    # --- skills, via the details/skills pager ---------------------------
+    # A different action shape than the cards above (a pager, not a
+    # component fetch) and it needs the member's numeric profileId, so it
+    # only runs once the resolution hop above has produced a urn.
+    if urn is not None:
+        profile_id = urn.rsplit(":", 1)[-1]
+        try:
+            frames = await fetch_skills(client, slug, profile_id)
+            names = skill_names(frames)
+        except LinkedInError as exc:
+            result.warn(exc.code, f"RSC skills fetch failed: {exc.message}", "skills")
+        else:
+            if names:
+                result.rsc_sections["skills"] = names
+                result.record("skills", Tier.LINKEDIN_RSC, count=len(names))
 
     # --- per-section GraphQL --------------------------------------------
     if urn is None:

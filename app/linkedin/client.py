@@ -56,6 +56,13 @@ class Pacer:
     What this does buy is a low absolute request volume and no bursts, which
     is appropriate for a service whose legitimate load is a handful of
     lookups. It is a politeness control, not an evasion.
+
+    The interval is only enforced across calls that share one `Pacer`
+    instance. A caller that builds a fresh `LinkedInClient` (and therefore a
+    fresh `Pacer`) per request gets pacing within that single fetch but not
+    across concurrent fetches -- the app entrypoint must construct one
+    `Pacer` and pass it into every `LinkedInClient` it creates for that to
+    hold across the whole process.
     """
 
     def __init__(self, min_interval: float) -> None:
@@ -72,10 +79,19 @@ class Pacer:
 
 
 class LinkedInClient:
-    def __init__(self, settings: Settings, session: Session | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        session: Session | None = None,
+        pacer: Pacer | None = None,
+    ) -> None:
         self._settings = settings
         self.session = session or Session(settings)
-        self._pacer = Pacer(settings.min_request_interval_seconds)
+        # A caller that shares one Pacer across every LinkedInClient it
+        # creates gets a process-wide request budget; one created here
+        # per instance only paces requests within this single client's
+        # lifetime. See Pacer's docstring.
+        self._pacer = pacer or Pacer(settings.min_request_interval_seconds)
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> LinkedInClient:
