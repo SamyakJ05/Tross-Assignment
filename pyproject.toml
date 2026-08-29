@@ -1,7 +1,7 @@
 [project]
 name = "linkedin-profile-api"
 version = "0.1.0"
-description = "A reverse-engineered LinkedIn profile API built directly on the Voyager endpoints, with tiered fallback and per-field provenance."
+description = "A reverse-engineered LinkedIn profile API using direct Dash REST and RSC requests."
 requires-python = ">=3.11"
 
 dependencies = [
@@ -12,6 +12,9 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "selectolax>=0.3.21",
 ]
+
+[project.scripts]
+linkedin-profile = "app.cli:main"
 
 [project.optional-dependencies]
 dev = [

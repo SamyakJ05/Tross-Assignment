@@ -35,7 +35,7 @@ app = FastAPI(
     title="LinkedIn Profile API",
     version="0.1.0",
     description=(
-        "A reverse-engineered LinkedIn profile API built directly on the Voyager endpoints. "
+        "A reverse-engineered LinkedIn profile API built directly on Dash REST and RSC endpoints. "
         "No browser, no automation driver: raw HTTP with a manually injected session.\n\n"
         "Every response reports which tier answered and how complete the result is, because "
         "LinkedIn's dominant failure mode is a 200 carrying degraded data rather than an error."

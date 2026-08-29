@@ -112,13 +112,15 @@ async def fetch_profile(client: LinkedInClient, slug: str) -> FetchResult:
     # Do not add a public request after a successful authenticated response.
     # It has no fields that can enrich the RSC card and can turn an otherwise
     # usable result into a session challenge on a reputation-sensitive IP.
-    if not result.top_card and not result.rsc_sections:
+    if client.settings.enable_public_fallback and not result.top_card and not result.rsc_sections:
         try:
             result.public_html = await client.get_text(public_profile_url(slug))
             result.record("public_page", Tier.PUBLIC_JSONLD)
         except LinkedInError as exc:
             log.warning("Public fallback failed for %s: %s", slug, exc)
             result.warn(exc.code, f"Public fallback tier also failed. {exc.message}")
+    elif not result.top_card and not result.rsc_sections:
+        result.warn("public_fallback_disabled", "Public fallback is disabled by configuration.")
 
     if not result.top_card and not result.public_html and not result.rsc_sections:
         raise NotFound(
