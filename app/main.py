@@ -45,6 +45,11 @@ app = FastAPI(
 _cache: TTLCache[ProfileResponse] = TTLCache(settings.cache_ttl_seconds)
 
 
+def _response_quality(response: ProfileResponse) -> int:
+    """Rank responses so an upstream degradation cannot poison the cache."""
+    return {"needs_review": 1, "partial": 2, "complete": 3}[response.completeness.value]
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -110,13 +115,13 @@ async def profile(
             detail=str(exc),
         ) from exc
 
-    if not refresh:
-        cached = await _cache.get(slug)
-        if cached is not None:
-            return cached.model_copy(update={"cached": True})
+    cached = await _cache.get(slug)
+    if cached is not None and not refresh:
+        return cached.model_copy(update={"cached": True})
 
     result = await get_profile(slug, settings)
-    await _cache.set(slug, result)
+    if cached is None or _response_quality(result) >= _response_quality(cached):
+        await _cache.set(slug, result)
     return result
 
 

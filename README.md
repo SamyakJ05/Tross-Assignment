@@ -253,7 +253,7 @@ dashboard — they are marked `sync: false` so they never enter the repo. A
 | Param | Required | Notes |
 |---|---|---|
 | `url` | yes | Full URL or bare slug. Accepts locale subdomains, deep links, query strings, percent-encoded unicode. |
-| `refresh` | no | Bypass cache. |
+| `refresh` | no | Bypass cache. A lower-quality refresh response never replaces a stronger cached entry. |
 
 Requires `X-API-Key`.
 
@@ -350,7 +350,7 @@ a client; `502 request_denied` does.
 ## Testing
 
 ```bash
-pytest              # 147 tests, no credentials required
+pytest              # 148 tests, no credentials required
 ```
 
 Fixtures are committed so the suite runs without a LinkedIn session.

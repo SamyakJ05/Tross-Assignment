@@ -153,6 +153,41 @@ def test_refresh_bypasses_cache(app_client: TestClient) -> None:
     assert refreshed["cached"] is False
 
 
+def test_degraded_refresh_does_not_replace_a_better_cached_response(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient upstream redirect must not poison an otherwise good cache entry."""
+    import app.main as main
+
+    complete = ProfileResponse(
+        profile=Profile(public_identifier="quality-test", full_name="Asha", headline="Engineer"),
+        completeness=Completeness.COMPLETE,
+    )
+    degraded = ProfileResponse(
+        profile=Profile(public_identifier="quality-test"),
+        completeness=Completeness.NEEDS_REVIEW,
+    )
+    responses = iter((complete, degraded))
+
+    async def sequential_get_profile(*_: object) -> ProfileResponse:
+        return next(responses)
+
+    monkeypatch.setattr(main, "get_profile", sequential_get_profile)
+    params = {"url": "https://www.linkedin.com/in/quality-test/"}
+
+    first = app_client.get("/v1/profile", params=params, headers=HEADERS).json()
+    refreshed = app_client.get(
+        "/v1/profile", params={**params, "refresh": "true"}, headers=HEADERS
+    ).json()
+    cached = app_client.get("/v1/profile", params=params, headers=HEADERS).json()
+
+    assert first["completeness"] == "complete"
+    assert refreshed["completeness"] == "needs_review"
+    assert cached["completeness"] == "complete"
+    assert cached["cached"] is True
+
+
 def test_delete_purges_cache(app_client: TestClient) -> None:
     """A cache of personal data needs a deletion path, not just an expiry."""
     params = {"url": "https://www.linkedin.com/in/purge-test/"}
