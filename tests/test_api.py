@@ -102,6 +102,54 @@ def test_returns_envelope_not_bare_profile(app_client: TestClient) -> None:
     assert "warnings" in body
 
 
+def test_post_uses_request_scoped_credentials_without_caching(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.main as main
+
+    captured: list[Settings] = []
+
+    async def capture_settings(slug: str, request_settings: Settings) -> ProfileResponse:
+        captured.append(request_settings)
+        return ProfileResponse(
+            profile=Profile(public_identifier=slug),
+            completeness=Completeness.PARTIAL,
+        )
+
+    monkeypatch.setattr(main, "get_profile", capture_settings)
+    payload = {
+        "url": "https://www.linkedin.com/in/request-session/",
+        "credentials": {
+            "LINKEDIN_LI_AT": "request-li-at",
+            "LINKEDIN_JSESSIONID": "ajax:request",
+            "LINKEDIN_COOKIE_HEADER": "li_at=request-li-at; JSESSIONID=\"ajax:request\"",
+        },
+    }
+
+    response = app_client.post("/v1/profile", json=payload, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["cached"] is False
+    assert captured[0].linkedin_li_at == "request-li-at"
+    assert captured[0].linkedin_jsessionid == '"ajax:request"'
+    assert captured[0].linkedin_cookie_header.startswith("li_at=")
+    assert "request-li-at" not in response.text
+
+
+def test_post_rejects_incomplete_request_scoped_credentials(app_client: TestClient) -> None:
+    response = app_client.post(
+        "/v1/profile",
+        json={
+            "url": "https://www.linkedin.com/in/request-session/",
+            "credentials": {"LINKEDIN_LI_AT": "only-one-cookie"},
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
 def test_slug_extracted_from_messy_url(app_client: TestClient) -> None:
     resp = app_client.get(
         "/v1/profile",

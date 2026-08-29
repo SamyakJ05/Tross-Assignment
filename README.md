@@ -99,6 +99,48 @@ Then use the same `curl` command above.
 | `refresh` | No | Bypass the cache and attempt a new upstream fetch |
 | `X-API-Key` | Yes | One value from `API_KEYS` |
 
+### `POST /v1/profile` with your own session
+
+Use this endpoint when testing with your own LinkedIn session instead of the server's `.env` session.
+The credential values are accepted only in the JSON request body, are marked write-only in OpenAPI, are not
+cached, and are never returned by the API. Do not send them in the URL or through `GET` query parameters.
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8000/v1/profile' \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: replace-with-a-long-random-api-key' \
+  --data '{
+    "url": "https://www.linkedin.com/in/example/",
+    "credentials": {
+      "LINKEDIN_LI_AT": "your-li-at-value",
+      "LINKEDIN_JSESSIONID": "your-jsessionid-value",
+      "LINKEDIN_COOKIE_HEADER": "your-complete-cookie-header"
+    }
+  }'
+```
+
+`LINKEDIN_COOKIE_HEADER` is recommended and should include `li_at`, `JSESSIONID`, and the rest of the
+Cookie header. Alternatively, provide both `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID`. Supplying all three
+is supported; the full header takes precedence when present.
+
+#### Find the three values in Chrome
+
+Use only a LinkedIn account you own or are authorized to use. Never paste the values into Git, screenshots,
+issue trackers, or chat.
+
+1. Sign in to LinkedIn in Chrome and open a profile page normally.
+2. Open DevTools with `Option` + `Command` + `I`, then open **Network** and reload the page.
+3. Select a successful request to `linkedin.com`, open **Headers**, and copy the complete `cookie` request
+   header value. Use that full, single-line value for `LINKEDIN_COOKIE_HEADER`.
+4. To obtain individual values, open DevTools **Application** → **Storage** → **Cookies** →
+   `https://www.linkedin.com`. Copy the `Value` cells for `li_at` and `JSESSIONID` into
+   `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID`.
+5. Send the POST request only to `https://` in a deployed environment. `http://127.0.0.1` is appropriate
+   only for local testing.
+
+If LinkedIn returns `challenge_required`, `session_expired`, `unexpected_redirect`, or `request_denied`, sign
+in normally, complete any challenge, capture a fresh session, and retry later. Do not automate the login flow.
+
 Example response, shortened:
 
 ```json
@@ -176,8 +218,8 @@ uv build
 ```
 
 The suite includes API authentication and cache behavior, URL validation, session header handling, RSC
-stream decoding, current RSC card layouts, promotion grouping, mapper behavior, CLI output, and error
-classification.
+stream decoding, current RSC card layouts, promotion grouping, request-scoped credential handling, mapper
+behavior, CLI output, and error classification.
 
 Before submitting:
 
@@ -209,6 +251,8 @@ by `X-API-Key`.
 - A session can be challenged or rejected after an upstream sequence changes. Refresh the burner session in
   a normal browser, then copy its full Cookie request-header value into the deployment secret. Do not add a
   login flow to this API.
+- The request-scoped credential endpoint is for controlled testing. A public deployment must use HTTPS and
+  an API key; callers should provide only their own authorized session and treat it as a password.
 - Field visibility is account-, relationship-, locale-, and experiment-dependent. Missing `about`, skills,
   languages, or images means the current cards did not expose an unambiguous value; the service does not
   invent one.

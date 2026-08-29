@@ -21,6 +21,7 @@ from app.linkedin.errors import (
 from app.linkedin.queries import registry_status
 from app.linkedin.resolver import InvalidProfileURL, extract_slug
 from app.models.envelope import ProfileResponse
+from app.models.requests import ProfileRequestWithCredentials
 from app.service import get_profile
 
 settings = get_settings()
@@ -123,6 +124,25 @@ async def profile(
     if cached is None or _response_quality(result) >= _response_quality(cached):
         await _cache.set(slug, result)
     return result
+
+
+@app.post(
+    "/v1/profile",
+    response_model=ProfileResponse,
+    dependencies=[Depends(require_api_key)],
+    summary="Fetch a LinkedIn profile with caller-provided credentials",
+)
+async def profile_with_credentials(payload: ProfileRequestWithCredentials) -> ProfileResponse:
+    """Use a caller-owned session once, without logging or caching its secret values."""
+    try:
+        slug = extract_slug(payload.url)
+    except InvalidProfileURL as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    return await get_profile(slug, payload.credentials.apply_to(settings))
 
 
 @app.delete(
