@@ -350,7 +350,7 @@ a client; `502 request_denied` does.
 ## Testing
 
 ```bash
-pytest              # 143 tests, no credentials required
+pytest              # 145 tests, no credentials required
 ```
 
 Fixtures are committed so the suite runs without a LinkedIn session.

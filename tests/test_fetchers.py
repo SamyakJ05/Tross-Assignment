@@ -53,3 +53,35 @@ async def test_terminal_section_error_stops_remaining_requests(
         "rsc_cookie_context_required",
         "unexpected_redirect",
     ]
+
+
+@pytest.mark.asyncio
+async def test_rsc_data_survives_a_dash_resolver_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The RSC card has no URN dependency and must remain usable on its own."""
+    result = fetchers.FetchResult()
+
+    async def fake_rsc(*_: object) -> list[object]:
+        return [{}]
+
+    async def fake_resolve(*_: object, **__: object) -> tuple[str, dict]:
+        raise UnexpectedRedirect("redirected", status=302)
+
+    monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
+    monkeypatch.setattr(fetchers, "visible_strings", lambda _: ["RSC role"])
+    monkeypatch.setattr(fetchers, "resolve_urn", fake_resolve)
+
+    settings = Settings(
+        linkedin_cookie_header="li_at=example; JSESSIONID=\"ajax:123\"",
+        linkedin_profile_components_query_id="",
+    )
+    await fetchers._fetch_authenticated(
+        type("Client", (), {"settings": settings})(),
+        "fixture-person",
+        "page",
+        result,
+    )
+
+    assert result.rsc_sections == {"experience": ["RSC role"]}
+    assert [warning.code for warning in result.warnings] == ["unexpected_redirect"]

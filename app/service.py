@@ -43,6 +43,12 @@ async def get_profile(slug: str, settings: Settings) -> ProfileResponse:
     if profile and raw.sections:
         profile = apply_sections(profile, raw.sections)
 
+    # RSC cards are independently addressable by vanity slug. If Dash is
+    # blocked but RSC answered, retain the partial profile rather than
+    # discarding it solely because identity fields are unavailable.
+    if profile is None and raw.rsc_sections:
+        profile = Profile(public_identifier=slug)
+
     if profile and raw.rsc_sections.get("experience"):
         profile = apply_rsc_experience(profile, raw.rsc_sections["experience"])
 

@@ -54,3 +54,29 @@ async def test_service_assembles_authenticated_sections(
         "education",
         "skills",
     ]
+
+
+@pytest.mark.asyncio
+async def test_service_returns_rsc_experience_when_dash_identity_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+) -> None:
+    raw = FetchResult()
+    raw.rsc_sections["experience"] = [
+        "Northwind",
+        "Full-time · 2 yrs",
+        "Pune, India · On-site",
+        "Software Engineer",
+        "Aug 2024 - Present · 2 yrs",
+    ]
+    raw.sources = [SectionSource(section="experience", tier=Tier.LINKEDIN_RSC)]
+
+    async def fake_fetch_profile(*_: object) -> FetchResult:
+        return raw
+
+    monkeypatch.setattr("app.service.fetch_profile", fake_fetch_profile)
+
+    response = await get_profile("fixture-person", settings)
+
+    assert response.profile.positions[0].title == "Software Engineer"
+    assert response.completeness is Completeness.NEEDS_REVIEW

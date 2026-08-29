@@ -112,7 +112,7 @@ async def fetch_profile(client: LinkedInClient, slug: str) -> FetchResult:
             log.warning("Public fallback failed for %s: %s", slug, exc)
             result.warn(exc.code, f"Public fallback tier also failed. {exc.message}")
 
-    if not result.top_card and not result.public_html:
+    if not result.top_card and not result.public_html and not result.rsc_sections:
         raise NotFound(
             f"Could not retrieve profile {slug!r} through any tier. See warnings for what each "
             f"tier reported."
@@ -127,15 +127,11 @@ async def _fetch_authenticated(
     page_instance: str,
     result: FetchResult,
 ) -> None:
-    # --- resolution hop, which also yields the top card ------------------
-    urn, top_payload = await resolve_urn(client, slug, page_instance=page_instance)
-    result.urn = urn
-    result.top_card = top_payload
-    result.record("top_card", Tier.VOYAGER_DASH_REST)
-
     # --- current RSC profile component ---------------------------------
     # The modern profile UI no longer uses the old GraphQL component query.
     # It serves experience through this direct HTTP RSC endpoint instead.
+    # It needs only the vanity slug, so do it before the Dash resolver: the
+    # two endpoints have independent failure modes.
     if client.settings.linkedin_cookie_header:
         try:
             frames = await fetch_profile_component(client, slug, PROFILE_CARDS_EXPERIENCE)
@@ -152,6 +148,23 @@ async def _fetch_authenticated(
             "the legacy GraphQL fallback remains disabled until independently verified.",
             "experience",
         )
+
+    # --- resolution hop, which also yields the top card ------------------
+    # A failed resolver must not discard a successfully fetched RSC card.
+    try:
+        urn, top_payload = await resolve_urn(client, slug, page_instance=page_instance)
+    except NotFound:
+        if not result.rsc_sections:
+            raise
+        result.warn("resolver_not_found", "Dash resolver found no profile; RSC data was retained.")
+        return
+    except LinkedInError as exc:
+        result.warn(exc.code, f"Dash resolver failed: {exc.message}", "top_card")
+        return
+
+    result.urn = urn
+    result.top_card = top_payload
+    result.record("top_card", Tier.VOYAGER_DASH_REST)
 
     # --- per-section GraphQL --------------------------------------------
     query = configured_profile_components_query(
