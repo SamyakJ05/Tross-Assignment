@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: linkedin-profile-api
+    runtime: python
+    plan: free
+    region: singapore          # closest region; see README on IP reputation
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /v1/health
+
+    envVars:
+      # Every secret is set in the Render dashboard, never in this file.
+      # sync: false keeps them out of the repo and out of blueprint syncs.
+      - key: LINKEDIN_LI_AT
+        sync: false
+      - key: LINKEDIN_JSESSIONID
+        sync: false
+      - key: LINKEDIN_COOKIE_HEADER
+        sync: false
+      - key: API_KEYS
+        sync: false
+
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: CACHE_TTL_SECONDS
+        value: "900"
+      - key: MIN_REQUEST_INTERVAL_SECONDS
+        value: "2.5"
+      - key: ENABLE_PUBLIC_FALLBACK
+        value: "true"
+      - key: LOG_LEVEL
+        value: "INFO"

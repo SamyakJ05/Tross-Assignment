@@ -1,0 +1,34 @@
+{
+  "_comment": "Note the third skill has no endorsement subtitle. That must map to None, not 0: endorsement counts are hidden from non-connections, so zero would assert something false.",
+  "data": {
+    "identityDashProfileComponentsBySectionType": {
+      "*elements": ["urn:li:fsd_profileCard:(ACoAAATestProfile0001,SKILLS)"]
+    }
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(ACoAAATestProfile0001,SKILLS)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Card",
+      "topComponents": [
+        {
+          "entityComponent": {
+            "titleV2": { "text": "Distributed Systems" },
+            "subtitle": { "text": "17 endorsements" }
+          }
+        },
+        {
+          "entityComponent": {
+            "titleV2": { "text": "PostgreSQL" },
+            "subtitle": { "text": "9 endorsements" }
+          }
+        },
+        {
+          "entityComponent": {
+            "titleV2": { "text": "Python" },
+            "subtitle": null
+          }
+        }
+      ]
+    }
+  ]
+}

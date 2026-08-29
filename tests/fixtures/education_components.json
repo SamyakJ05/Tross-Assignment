@@ -1,0 +1,29 @@
+{
+  "data": {
+    "identityDashProfileComponentsBySectionType": {
+      "*elements": ["urn:li:fsd_profileCard:(ACoAAATestProfile0001,EDUCATION)"]
+    }
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(ACoAAATestProfile0001,EDUCATION)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Card",
+      "topComponents": [
+        {
+          "entityComponent": {
+            "titleV2": { "text": "Indian Institute of Technology, Bombay" },
+            "subtitle": { "text": "Bachelor of Technology - BTech, Computer Science" },
+            "caption": { "text": "2016 - 2020" }
+          }
+        },
+        {
+          "entityComponent": {
+            "titleV2": { "text": "Delhi Public School" },
+            "subtitle": { "text": "Higher Secondary" },
+            "caption": { "text": "2014 - 2016" }
+          }
+        }
+      ]
+    }
+  ]
+}

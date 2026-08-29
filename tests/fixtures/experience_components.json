@@ -1,0 +1,78 @@
+{
+  "_comment": "Two employers. Northwind is the multi-role case: outer component names the company, nested components are the individual roles. Fabrikam is the single-role case. A parser that reads only the outer level loses the Northwind promotion history, which is what test_mappers.py asserts against.",
+  "data": {
+    "identityDashProfileComponentsBySectionType": {
+      "*elements": ["urn:li:fsd_profileCard:(ACoAAATestProfile0001,EXPERIENCE)"]
+    }
+  },
+  "included": [
+    {
+      "entityUrn": "urn:li:fsd_profileCard:(ACoAAATestProfile0001,EXPERIENCE)",
+      "$type": "com.linkedin.voyager.dash.identity.profile.tetris.Card",
+      "topComponents": [
+        {
+          "entityComponent": {
+            "titleV2": { "text": "Northwind Systems" },
+            "subtitle": { "text": "Full-time · 3 yrs 2 mos" },
+            "caption": { "text": "Jan 2022 - Present · 3 yrs 2 mos" },
+            "metadata": { "text": "Bengaluru, Karnataka, India" },
+            "subComponents": {
+              "components": [
+                {
+                  "entityComponent": {
+                    "titleV2": { "text": "Staff Engineer" },
+                    "subtitle": { "text": "Full-time" },
+                    "caption": { "text": "Jul 2024 - Present · 1 yr 2 mos" },
+                    "metadata": { "text": "Bengaluru, Karnataka, India" },
+                    "subComponents": {
+                      "components": [
+                        {
+                          "textComponent": {
+                            "text": { "text": "Led the migration of the ingestion pipeline to a streaming architecture." }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "entityComponent": {
+                    "titleV2": { "text": "Senior Engineer" },
+                    "subtitle": { "text": "Full-time" },
+                    "caption": { "text": "Mar 2023 - Jul 2024 · 1 yr 5 mos" },
+                    "metadata": { "text": "Bengaluru, Karnataka, India" }
+                  }
+                },
+                {
+                  "entityComponent": {
+                    "titleV2": { "text": "Engineer" },
+                    "subtitle": { "text": "Full-time" },
+                    "caption": { "text": "Jan 2022 - Mar 2023 · 1 yr 3 mos" },
+                    "metadata": { "text": "Bengaluru, Karnataka, India" }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "entityComponent": {
+            "titleV2": { "text": "Backend Engineer" },
+            "subtitle": { "text": "Fabrikam Data · Full-time" },
+            "caption": { "text": "Aug 2020 - Dec 2021 · 1 yr 5 mos" },
+            "metadata": { "text": "Pune, Maharashtra, India" },
+            "subComponents": {
+              "components": [
+                {
+                  "textComponent": {
+                    "text": { "text": "Built the billing reconciliation service." }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
