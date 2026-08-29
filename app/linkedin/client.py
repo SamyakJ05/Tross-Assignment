@@ -218,9 +218,11 @@ class LinkedInClient:
 
         if status in (301, 302, 303, 307, 308):
             raise UnexpectedRedirect(
-                "LinkedIn redirected a data request. The endpoint contract, session context, "
-                "or persisted-query route is no longer valid for this request.",
+                f"LinkedIn redirected a data request to {location!r}. The endpoint contract, "
+                f"session context, or persisted-query route is no longer valid for this "
+                f"request.",
                 status=status,
+                location=location or None,
             )
 
         if status in (401, 403):

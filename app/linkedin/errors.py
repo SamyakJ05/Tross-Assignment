@@ -92,6 +92,10 @@ class UnexpectedRedirect(LinkedInError):
     retryable = False
     code = "unexpected_redirect"
 
+    def __init__(self, message: str, *, status: int | None = None, location: str | None = None):
+        super().__init__(message, status=status)
+        self.location = location
+
 
 class SessionExpired(LinkedInError):
     """401 or 403. The cookie is no longer valid.

@@ -145,6 +145,8 @@ def test_ordinary_redirect_is_reported_explicitly(client: LinkedInClient) -> Non
     with pytest.raises(UnexpectedRedirect) as exc:
         client._classify(_response(302, headers={"location": "https://www.linkedin.com/feed/"}))
     assert exc.value.status == 302
+    assert exc.value.location == "https://www.linkedin.com/feed/"
+    assert "https://www.linkedin.com/feed/" in exc.value.message
 
 
 # ---------------------------------------------------------------------------

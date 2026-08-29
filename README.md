@@ -11,15 +11,21 @@ The implementation uses two currently observed LinkedIn request families:
 Browser DevTools was used only while developing the request contracts. The deployed API and CLI make
 ordinary HTTP requests with the two session values supplied through environment variables or the POST body.
 
+**Live deployment:** https://linkedin-profile-api-z73g.onrender.com — interactive docs at
+[`/docs`](https://linkedin-profile-api-z73g.onrender.com/docs), unauthenticated health check at
+[`/v1/health`](https://linkedin-profile-api-z73g.onrender.com/v1/health). `/v1/profile` requires an
+`X-API-Key`; request one from the maintainer rather than expecting the example key in `.env.example`
+to work.
+
 ## Assignment checklist
 
 | Requirement | Status |
 |---|---|
-| Public HTTPS API | Render blueprint included; deploy after GitHub publication |
+| Public HTTPS API | Deployed on Render: https://linkedin-profile-api-z73g.onrender.com |
 | LinkedIn profile URL input | `GET /v1/profile?url=...` |
 | Structured profile JSON | Schema includes every requested profile field |
 | Own backend credentials | Server-managed or caller-provided LinkedIn session support |
-| Public GitHub source | Local Git repository ready to push; no secrets tracked |
+| Public GitHub source | Pushed to GitHub; no secrets tracked |
 | Setup, API, approach, and limitations | This README |
 
 Fields are returned when LinkedIn makes them visible through the current endpoint contracts. The response
@@ -229,15 +235,17 @@ Before submitting:
 1. Run the three commands above.
 2. Run one local API request with a fresh burner session and confirm the response fields and `sources`.
 3. Confirm `git status --short` is empty and `git ls-files .env` prints nothing.
-4. Push the repository publicly to GitHub.
-5. Deploy the `render.yaml` blueprint and set the listed secrets in Render.
-6. Confirm `<render-url>/v1/health` and one authenticated `GET /v1/profile` request over HTTPS.
+4. Push the repository publicly to GitHub. **Done** — see the live deployment link above.
+5. Deploy the `render.yaml` blueprint and set the listed secrets in Render. **Done.**
+6. Confirm `<render-url>/v1/health` and one authenticated `GET /v1/profile` request over HTTPS. **Done**
+   — both verified against the live deployment above; rotate the `API_KEYS` secret in Render before
+   final submission since a placeholder value was used during development.
 
 ## Render deployment
 
-`render.yaml` creates the web service with only the API-access secret. The caller-provided POST flow needs
-no LinkedIn credentials on Render. Add the two optional LinkedIn secrets manually only if you later want
-the server-managed GET flow:
+Deployed at https://linkedin-profile-api-z73g.onrender.com. `render.yaml` creates the web service with
+only the API-access secret. The caller-provided POST flow needs no LinkedIn credentials on Render. Add
+the two optional LinkedIn secrets manually only if you later want the server-managed GET flow:
 
 | Secret | Required |
 |---|---:|
