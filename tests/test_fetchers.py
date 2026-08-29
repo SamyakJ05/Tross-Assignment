@@ -61,15 +61,24 @@ async def test_rsc_data_survives_a_dash_resolver_redirect(
 ) -> None:
     """The RSC card has no URN dependency and must remain usable on its own."""
     result = fetchers.FetchResult()
+    attempts: list[str] = []
 
-    async def fake_rsc(*_: object) -> list[object]:
-        return [{}]
+    async def fake_rsc(*args: object) -> list[object]:
+        attempts.append(f"rsc:{args[2]}")
+        return [{"component": args[2]}]
 
     async def fake_resolve(*_: object, **__: object) -> tuple[str, dict]:
+        attempts.append("dash")
         raise UnexpectedRedirect("redirected", status=302)
 
     monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
-    monkeypatch.setattr(fetchers, "visible_strings", lambda _: ["RSC role"])
+    monkeypatch.setattr(
+        fetchers,
+        "visible_strings",
+        lambda frames: ["RSC role"]
+        if frames[0]["component"] == fetchers.PROFILE_CARDS_EXPERIENCE
+        else [],
+    )
     monkeypatch.setattr(fetchers, "resolve_urn", fake_resolve)
 
     settings = Settings(
@@ -85,3 +94,4 @@ async def test_rsc_data_survives_a_dash_resolver_redirect(
 
     assert result.rsc_sections == {"experience": ["RSC role"]}
     assert [warning.code for warning in result.warnings] == ["unexpected_redirect"]
+    assert attempts[0] == "dash"

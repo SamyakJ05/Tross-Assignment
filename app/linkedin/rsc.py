@@ -195,6 +195,26 @@ def visible_strings(frames: list[Any]) -> list[str]:
         if len(value) < 2 or len(value) > 1_500 or not re.search(r"[A-Za-z]", value):
             return False
         lowered = value.lower()
+        if lowered in {
+            "stringvalue",
+            "intvalue",
+            "booleanvalue",
+            "floatvalue",
+            "floatexpression",
+            "profilecardsservedevent",
+            "oncomponentappear",
+            "bindableboolean",
+            "collectionnamespace",
+            "lazycolumn",
+            "fillavailable",
+            "fullpage",
+            "ghostcompact",
+        }:
+            return False
+        if value.startswith("urn:") or value.lower().endswith(" logo"):
+            return False
+        if re.fullmatch(r"[A-Za-z0-9+/]{20,}={0,2}", value):
+            return False
         if value.startswith("$") or ":props:" in value:
             return False
         if any(

@@ -14,6 +14,7 @@ from app.linkedin.fetchers import extract_jsonld, fetch_profile
 from app.models.domain import Profile
 from app.models.envelope import ProfileResponse, assess
 from app.parsing.mappers import (
+    apply_rsc_below_activity,
     apply_rsc_experience,
     apply_sections,
     map_jsonld,
@@ -51,6 +52,8 @@ async def get_profile(slug: str, settings: Settings) -> ProfileResponse:
 
     if profile and raw.rsc_sections.get("experience"):
         profile = apply_rsc_experience(profile, raw.rsc_sections["experience"])
+    if profile and raw.rsc_sections.get("below_activity"):
+        profile = apply_rsc_below_activity(profile, raw.rsc_sections["below_activity"])
 
     # Public tier fills gaps, or stands alone if nothing else answered.
     if raw.public_html:

@@ -35,7 +35,13 @@ from app.linkedin.queries import (
     encode_variables,
 )
 from app.linkedin.resolver import public_profile_url, resolve_urn
-from app.linkedin.rsc import PROFILE_CARDS_EXPERIENCE, fetch_profile_component, visible_strings
+from app.linkedin.rsc import (
+    PROFILE_CARDS_ABOVE_ACTIVITY,
+    PROFILE_CARDS_BELOW_ACTIVITY,
+    PROFILE_CARDS_EXPERIENCE,
+    fetch_profile_component,
+    visible_strings,
+)
 from app.linkedin.session import VOYAGER_BASE
 from app.models.envelope import SectionSource, Tier, Warning
 
@@ -103,8 +109,10 @@ async def fetch_profile(client: LinkedInClient, slug: str) -> FetchResult:
             "Set LINKEDIN_LI_AT and LINKEDIN_JSESSIONID to enable the authenticated path.",
         )
 
-    # Public tier fills whatever the authenticated tiers did not produce.
-    if not result.top_card or (not result.sections and not result.rsc_sections):
+    # Do not add a public request after a successful authenticated response.
+    # It has no fields that can enrich the RSC card and can turn an otherwise
+    # usable result into a session challenge on a reputation-sensitive IP.
+    if not result.top_card and not result.rsc_sections:
         try:
             result.public_html = await client.get_text(public_profile_url(slug))
             result.record("public_page", Tier.PUBLIC_JSONLD)
@@ -127,20 +135,44 @@ async def _fetch_authenticated(
     page_instance: str,
     result: FetchResult,
 ) -> None:
-    # --- current RSC profile component ---------------------------------
+    # --- resolution hop, which also yields the top card ------------------
+    # Run this before the RSC card requests. A fresh Dash request has proven
+    # more reliable before the three-card sequence, but an RSC response is
+    # still retained if this independent hop redirects.
+    urn: str | None = None
+    try:
+        urn, top_payload = await resolve_urn(client, slug, page_instance=page_instance)
+    except NotFound:
+        result.warn("resolver_not_found", "Dash resolver found no profile; trying RSC cards.")
+    except LinkedInError as exc:
+        result.warn(exc.code, f"Dash resolver failed: {exc.message}", "top_card")
+    else:
+        result.urn = urn
+        result.top_card = top_payload
+        result.record("top_card", Tier.VOYAGER_DASH_REST)
+
+    # --- current RSC profile cards -------------------------------------
     # The modern profile UI no longer uses the old GraphQL component query.
-    # It serves experience through this direct HTTP RSC endpoint instead.
-    # It needs only the vanity slug, so do it before the Dash resolver: the
-    # two endpoints have independent failure modes.
+    # These cards need only the vanity slug, so they remain available when
+    # Dash fails for an otherwise valid session.
     if client.settings.linkedin_cookie_header:
-        try:
-            frames = await fetch_profile_component(client, slug, PROFILE_CARDS_EXPERIENCE)
-            result.rsc_sections["experience"] = visible_strings(frames)
-            result.record("experience", Tier.LINKEDIN_RSC)
-        except LinkedInError as exc:
-            result.warn(exc.code, f"RSC experience fetch failed: {exc.message}", "experience")
-            if exc.tier_fatal:
-                return
+        components = (
+            ("experience", PROFILE_CARDS_EXPERIENCE),
+            ("above_activity", PROFILE_CARDS_ABOVE_ACTIVITY),
+            ("below_activity", PROFILE_CARDS_BELOW_ACTIVITY),
+        )
+        for section, component in components:
+            try:
+                frames = await fetch_profile_component(client, slug, component)
+                values = visible_strings(frames)
+            except LinkedInError as exc:
+                result.warn(exc.code, f"RSC {section} fetch failed: {exc.message}", section)
+                if exc.tier_fatal:
+                    return
+                continue
+            if values:
+                result.rsc_sections[section] = values
+                result.record(section, Tier.LINKEDIN_RSC, count=len(values))
     else:
         result.warn(
             "rsc_cookie_context_required",
@@ -149,24 +181,9 @@ async def _fetch_authenticated(
             "experience",
         )
 
-    # --- resolution hop, which also yields the top card ------------------
-    # A failed resolver must not discard a successfully fetched RSC card.
-    try:
-        urn, top_payload = await resolve_urn(client, slug, page_instance=page_instance)
-    except NotFound:
-        if not result.rsc_sections:
-            raise
-        result.warn("resolver_not_found", "Dash resolver found no profile; RSC data was retained.")
-        return
-    except LinkedInError as exc:
-        result.warn(exc.code, f"Dash resolver failed: {exc.message}", "top_card")
-        return
-
-    result.urn = urn
-    result.top_card = top_payload
-    result.record("top_card", Tier.VOYAGER_DASH_REST)
-
     # --- per-section GraphQL --------------------------------------------
+    if urn is None:
+        return
     query = configured_profile_components_query(
         client.settings.linkedin_profile_components_query_id,
         client.settings.linkedin_profile_components_verified_on,

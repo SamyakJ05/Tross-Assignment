@@ -44,6 +44,21 @@ _RSC_EMPLOYMENT_CAPTION_RE = re.compile(
     re.IGNORECASE,
 )
 _RSC_DURATION_RE = re.compile(r"\d+(?:\.\d+)?\s+(?:yrs?|mos?)(?:\s+\d+\s+mos?)?")
+_RSC_COMBINED_EMPLOYMENT_DURATION_RE = re.compile(
+    r"^(?:Full-time|Part-time|Internship|Contract|Freelance)\s+·\s+.*\d+\s+(?:yrs?|mos?)",
+    re.IGNORECASE,
+)
+_RSC_LOCATION_MODE_RE = re.compile(r"\s·\s(?:On-site|Remote|Hybrid)$", re.IGNORECASE)
+_RSC_IGNORED_VALUES = {"experience", "expanded", "collapsed", "show all", "show all experiences"}
+_RSC_ROLE_WORD_RE = re.compile(
+    r"\b(?:intern|engineer|developer|manager|analyst|architect|consultant|scientist|designer|researcher)\b",
+    re.IGNORECASE,
+)
+_RSC_ISSUED_RE = re.compile(r"^Issued\s+(?:[A-Z][a-z]+\s+)?\d{4}$")
+_RSC_DEGREE_RE = re.compile(
+    r"\b(?:associate|bachelor|master|doctor|phd|btech|bsc|bcom|ba|mba|pgdm|diploma)\b",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Tier 2: the dash REST top card
@@ -404,67 +419,72 @@ def apply_rsc_experience(profile: Profile, values: list[str]) -> Profile:
     """
     company: str | None = None
     positions: list[PositionGroup] = []
-    seen: set[tuple[str | None, str | None]] = set()
+    seen: set[tuple[str, str, str]] = set()
+    previous_date_index = -1
+    date_indexes = [i for i, value in enumerate(values) if _DATE_CAPTION_RE.search(value)]
 
-    for index, value in enumerate(values):
-        # A combined employment/duration line anchors the preceding employer
-        # for this role and all immediately following promotion rows.
-        if index + 1 < len(values) and _RSC_EMPLOYMENT_CAPTION_RE.fullmatch(values[index + 1]):
-            company = value
+    for date_number, index in enumerate(date_indexes):
+        # Everything between the last date row and this date row belongs to
+        # the next role. A role description can precede a promotion title, so
+        # use semantic filters rather than a fixed number of preceding items.
+        preceding = values[previous_date_index + 1 : index]
+        following_end = (
+            date_indexes[date_number + 1] if date_number + 1 < len(date_indexes) else len(values)
+        )
+        following = values[index + 1 : following_end]
+        previous_date_index = index
 
-        if not _DATE_CAPTION_RE.search(value):
+        # Employer headings use either "company → duration" or
+        # "company → employment · duration". A bare "title → Internship"
+        # is deliberately not a heading: that is a promotion at the active
+        # employer.
+        for item_index, item in enumerate(preceding[:-1]):
+            next_item = preceding[item_index + 1]
+            starts_company_group = _RSC_DURATION_RE.fullmatch(
+                next_item
+            ) or _RSC_COMBINED_EMPLOYMENT_DURATION_RE.fullmatch(next_item)
+            if starts_company_group:
+                company = item
+
+        # Single-role cards commonly put the company in the subtitle as
+        # "Company · Employment type" instead of emitting an outer heading.
+        company_from_inline_subtitle = False
+        for item in reversed(preceding):
+            if " · " not in item:
+                continue
+            candidate, suffix = item.rsplit(" · ", 1)
+            if suffix.lower() in _RSC_EMPLOYMENT_TYPES:
+                company = candidate
+                company_from_inline_subtitle = True
+                break
+
+        title = next((item for item in reversed(preceding) if _rsc_is_title(item)), None)
+        if not title or not company:
             continue
-        # The rendered card puts the employer immediately before its duration,
-        # followed by location, title and employment type.  Keep six items so
-        # the employer is not truncated from a normal single-role card.
-        preceding = values[max(0, index - 6) : index]
-        title = next(
-            (
-                item
-                for item in reversed(preceding)
-                if item.lower() not in _RSC_EMPLOYMENT_TYPES
-                and not _RSC_EMPLOYMENT_CAPTION_RE.fullmatch(item)
-                and " · " not in item
-                and not _RSC_DURATION_RE.fullmatch(item)
-            ),
-            None,
+
+        employment_type = _rsc_employment_type(preceding)
+        location = _rsc_location(following) or (
+            None if company_from_inline_subtitle else _rsc_location(preceding)
         )
-        duration_index = next(
-            (
-                offset
-                for offset, item in enumerate(preceding)
-                if _RSC_DURATION_RE.fullmatch(item)
-            ),
-            None,
-        )
-        if duration_index is not None and duration_index > 0:
-            company = preceding[duration_index - 1]
-        if not title or not company or (title, company) in seen:
+        dates = DateRange(**parse_caption_dates(values[index]))
+        key = (company, title, values[index])
+        if key in seen:
             continue
-        seen.add((title, company))
-        employment_type = next(
-            (
-                match.group(1).capitalize()
-                for item in preceding
-                if (match := _RSC_EMPLOYMENT_CAPTION_RE.fullmatch(item))
-            ),
-            None,
-        )
-        location = next(
-            (
-                item
-                for item in reversed(preceding)
-                if " · " in item and not _RSC_EMPLOYMENT_CAPTION_RE.fullmatch(item)
-            ),
-            None,
-        )
+        seen.add(key)
+
+        description_lines = [
+            item
+            for item in following
+            if item.startswith(("•", "-")) and not item.startswith("--")
+        ]
         position = Position(
             title=title,
             company_name=company,
             company=Company(name=company),
             employment_type=employment_type,
             location=location,
-            dates=DateRange(**parse_caption_dates(value)),
+            description="\n".join(description_lines) or None,
+            dates=dates,
         )
         group = next((item for item in positions if item.company_name == company), None)
         if group:
@@ -474,14 +494,163 @@ def apply_rsc_experience(profile: Profile, values: list[str]) -> Profile:
                 PositionGroup(
                     company_name=company,
                     company=Company(name=company),
-                    dates=position.dates,
+                    dates=dates,
                     positions=[position],
                 )
             )
 
+    _append_undated_rsc_tail(positions, values[previous_date_index + 1 :], seen)
+
     if positions:
         profile.position_groups = positions
     return profile
+
+
+def _rsc_is_title(value: str) -> bool:
+    """Whether an RSC card string can be a role title."""
+    return (
+        value.lower() not in _RSC_IGNORED_VALUES
+        and not value.startswith(("•", "-"))
+        and not _RSC_DURATION_RE.fullmatch(value)
+        and not _RSC_EMPLOYMENT_CAPTION_RE.fullmatch(value)
+        and " · " not in value
+        and "logo" not in value.lower()
+        and not _DATE_CAPTION_RE.search(value)
+    )
+
+
+def _rsc_employment_type(values: list[str]) -> str | None:
+    for value in values:
+        match = _RSC_EMPLOYMENT_CAPTION_RE.fullmatch(value)
+        if match:
+            return match.group(1).capitalize()
+        if " · " in value:
+            suffix = value.rsplit(" · ", 1)[-1]
+            if suffix.lower() in _RSC_EMPLOYMENT_TYPES:
+                return suffix.capitalize()
+    return None
+
+
+def _rsc_location(values: list[str]) -> str | None:
+    for value in values:
+        if _RSC_LOCATION_MODE_RE.search(value):
+            return value
+    # Some older cards show a plain city/country directly after the date.
+    for value in values[:3]:
+        if "," in value and not value.startswith(("•", "-")):
+            return value
+    return None
+
+
+def _append_undated_rsc_tail(
+    groups: list[PositionGroup], values: list[str], seen: set[tuple[str, str, str]]
+) -> None:
+    """Keep a final visible role when LinkedIn omits its date row.
+
+    Such rows appear as ``title → company → description`` after a dated role.
+    Require a role-like title and a separate company label, so a free-form
+    description cannot become a fabricated experience record.
+    """
+    for index, title in enumerate(values[:-1]):
+        if not _RSC_ROLE_WORD_RE.search(title) or not _rsc_is_title(title):
+            continue
+        company = values[index + 1]
+        if not _rsc_is_title(company) or _RSC_ROLE_WORD_RE.search(company):
+            continue
+        key = (company, title, "")
+        if key in seen:
+            continue
+        seen.add(key)
+        description = next(
+            (
+                value
+                for value in values[index + 2 :]
+                if _rsc_is_title(value) and not _RSC_ROLE_WORD_RE.search(value)
+            ),
+            None,
+        )
+        group = next((item for item in groups if item.company_name == company), None)
+        position = Position(
+            title=title,
+            company_name=company,
+            company=Company(name=company),
+            description=description,
+        )
+        if group:
+            group.positions.append(position)
+        else:
+            groups.append(
+                PositionGroup(
+                    company_name=company,
+                    company=Company(name=company),
+                    positions=[position],
+                )
+            )
+        return
+
+
+def apply_rsc_below_activity(profile: Profile, values: list[str]) -> Profile:
+    """Map the visible education and certification rows from the lower RSC card.
+
+    The current card renders these fields as display strings, not normalized
+    entities. Only fields with an unambiguous neighbouring label are emitted.
+    Dates are left empty when the card does not show them.
+    """
+    if not profile.certifications:
+        certifications: list[Certification] = []
+        for index, value in enumerate(values):
+            if not _RSC_ISSUED_RE.fullmatch(value) or index < 2:
+                continue
+            name, authority = values[index - 2 : index]
+            if not _rsc_is_title(name) or not _rsc_is_title(authority):
+                continue
+            license_number = next(
+                (
+                    candidate.removeprefix("Credential ID ")
+                    for candidate in values[index + 1 : index + 3]
+                    if candidate.startswith("Credential ID ")
+                ),
+                None,
+            )
+            certifications.append(
+                Certification(
+                    name=name,
+                    authority=authority,
+                    license_number=license_number,
+                    dates=DateRange(**parse_caption_dates(value.removeprefix("Issued "))),
+                )
+            )
+        profile.certifications = _dedupe_certifications(certifications)
+
+    if not profile.educations:
+        educations: list[Education] = []
+        for index, value in enumerate(values):
+            if not _RSC_DEGREE_RE.search(value) or index == 0:
+                continue
+            school = values[index - 1]
+            if _rsc_is_title(school):
+                educations.append(Education(school_name=school, degree_name=value))
+        profile.educations = _dedupe_educations(educations)
+
+    return profile
+
+
+def _dedupe_certifications(values: list[Certification]) -> list[Certification]:
+    seen: set[tuple[str | None, str | None]] = set()
+    return [
+        value
+        for value in values
+        if not ((key := (value.name, value.authority)) in seen or seen.add(key))
+    ]
+
+
+def _dedupe_educations(values: list[Education]) -> list[Education]:
+    seen: set[tuple[str | None, str | None]] = set()
+    return [
+        value
+        for value in values
+        if not ((key := (value.school_name, value.degree_name)) in seen or seen.add(key))
+    ]
 
 
 # ---------------------------------------------------------------------------

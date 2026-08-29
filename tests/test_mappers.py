@@ -13,6 +13,7 @@ from typing import Any
 from app.linkedin.fetchers import extract_jsonld
 from app.models.domain import Profile
 from app.parsing.mappers import (
+    apply_rsc_below_activity,
     apply_rsc_experience,
     map_education,
     map_experience,
@@ -61,6 +62,82 @@ def test_maps_current_rsc_experience_layout_and_groups_promotions() -> None:
         "Software Engineer Intern",
     ]
     assert mapped.position_groups[0].positions[0].employment_type == "Full-time"
+
+
+def test_maps_promotions_and_single_role_employers_from_live_rsc_card_shape() -> None:
+    profile = Profile(public_identifier="x")
+    values = [
+        "Experience",
+        "Northwind",
+        "2 yrs 8 mos",
+        "Pune, India · On-site",
+        "Software Engineer",
+        "Full-time",
+        "Aug 2024 - Present · 2 yrs 1 mo",
+        "• Built a reliable service.",
+        "Expanded",
+        "Software Engineer Intern",
+        "Internship",
+        "Jan 2024 - Aug 2024 · 8 mos",
+        "• Built an earlier service.",
+        "Fabrikam",
+        "7 mos",
+        "Software Development Intern",
+        "Jun 2023 - Dec 2023 · 7 mos",
+        "Bengaluru, India · Remote",
+        "Android Intern",
+        "Contoso Research · Internship",
+        "Jun 2022 - Aug 2022 · 3 mos",
+        "New Delhi, India",
+        "Machine Learning Intern",
+        "Contoso Policy Research",
+        "Published an applied research project.",
+    ]
+
+    mapped = apply_rsc_experience(profile, values)
+
+    northwind = mapped.position_groups[0]
+    assert northwind.company_name == "Northwind"
+    assert [position.title for position in northwind.positions] == [
+        "Software Engineer",
+        "Software Engineer Intern",
+    ]
+    assert northwind.positions[0].description == "• Built a reliable service."
+    assert mapped.position_groups[1].company_name == "Fabrikam"
+    assert mapped.position_groups[1].positions[0].location == "Bengaluru, India · Remote"
+    assert mapped.position_groups[2].company_name == "Contoso Research"
+    assert mapped.position_groups[3].positions[0].title == "Machine Learning Intern"
+    assert mapped.position_groups[3].positions[0].dates.is_empty
+
+
+def test_maps_lower_rsc_card_certifications_and_education() -> None:
+    profile = Profile(public_identifier="x")
+    values = [
+        "Microsoft Certified: Azure Fundamentals",
+        "Microsoft",
+        "Issued May 2026",
+        "Credential ID ABC123",
+        "UBS Certified Engineer (Gold)",
+        "UBS",
+        "Issued Oct 2025",
+        "XLRI Jamshedpur",
+        "PGDM, Finance",
+        "Shiv Nadar University",
+        "Bachelor of Technology - BTech, Computer Science",
+    ]
+
+    mapped = apply_rsc_below_activity(profile, values)
+
+    assert [(item.name, item.authority) for item in mapped.certifications] == [
+        ("Microsoft Certified: Azure Fundamentals", "Microsoft"),
+        ("UBS Certified Engineer (Gold)", "UBS"),
+    ]
+    assert mapped.certifications[0].license_number == "ABC123"
+    assert mapped.certifications[0].dates.start_year == 2026
+    assert [(item.school_name, item.degree_name) for item in mapped.educations] == [
+        ("XLRI Jamshedpur", "PGDM, Finance"),
+        ("Shiv Nadar University", "Bachelor of Technology - BTech, Computer Science"),
+    ]
 
 # ---------------------------------------------------------------------------
 # Top card
