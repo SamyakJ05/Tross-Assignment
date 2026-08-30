@@ -45,8 +45,10 @@ from app.linkedin.rsc import (
     PROFILE_CARDS_ABOVE_ACTIVITY,
     PROFILE_CARDS_BELOW_ACTIVITY,
     PROFILE_CARDS_EXPERIENCE,
+    fetch_languages,
     fetch_profile_component,
     fetch_skills,
+    language_values,
     skill_names,
     visible_strings,
 )
@@ -191,21 +193,31 @@ async def _fetch_authenticated(
             result.rsc_sections[section] = values
             result.record(section, Tier.LINKEDIN_RSC, count=len(values))
 
-    # --- skills, via the details/skills pager ---------------------------
-    # A different action shape than the cards above (a pager, not a
-    # component fetch) and it needs the member's numeric profileId, so it
-    # only runs once the resolution hop above has produced a urn.
+    # --- detail pagers: skills and languages -----------------------------
+    # These use a different action shape than the cards above (a pager, not
+    # a component fetch) and need the member's numeric profileId, so they
+    # only run once the resolution hop above has produced a URN.
     if urn is not None:
         profile_id = urn.rsplit(":", 1)[-1]
-        try:
-            frames = await fetch_skills(client, slug, profile_id)
-            names = skill_names(frames)
-        except LinkedInError as exc:
-            result.warn(exc.code, f"RSC skills fetch failed: {exc.message}", "skills")
-        else:
-            if names:
-                result.rsc_sections["skills"] = names
-                result.record("skills", Tier.LINKEDIN_RSC, count=len(names))
+        detail_fetches = (
+            ("skills", fetch_skills, skill_names),
+            ("languages", fetch_languages, language_values),
+        )
+        for section, fetch, extract in detail_fetches:
+            try:
+                frames = await fetch(client, slug, profile_id)
+                values = extract(frames)
+            except LinkedInError as exc:
+                result.warn(exc.code, f"RSC {section} fetch failed: {exc.message}", section)
+            else:
+                if values:
+                    result.rsc_sections[section] = values
+                    item_count = (
+                        sum(not value.casefold().endswith(" proficiency") for value in values)
+                        if section == "languages"
+                        else len(values)
+                    )
+                    result.record(section, Tier.LINKEDIN_RSC, count=item_count)
 
     # --- per-section GraphQL --------------------------------------------
     if urn is None:
@@ -215,11 +227,9 @@ async def _fetch_authenticated(
         client.settings.linkedin_profile_components_verified_on,
     )
     if not query.query_id:
-        result.warn(
-            "query_id_unconfigured",
-            "No queryId is configured for profile components, so detailed sections were not "
-            "fetched. Capture a current hash from DevTools and set it in app/linkedin/queries.py.",
-        )
+        # This is an optional compatibility path. Modern detail sections use
+        # the RSC calls above, so intentionally leaving GraphQL unconfigured
+        # is not a degraded state and must not create a user-facing warning.
         return
 
     for section, section_key in SECTION_KEYS.items():

@@ -38,6 +38,7 @@ async def test_terminal_section_error_stops_remaining_requests(
 
     monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
     monkeypatch.setattr(fetchers, "fetch_skills", fake_fetch_skills)
+    monkeypatch.setattr(fetchers, "fetch_languages", fake_fetch_skills)
     monkeypatch.setattr(
         fetchers,
         "configured_profile_components_query",
@@ -160,6 +161,7 @@ async def test_skills_pager_uses_the_resolved_profile_id(
     monkeypatch.setattr(fetchers, "resolve_urn", fake_resolve)
     monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
     monkeypatch.setattr(fetchers, "fetch_skills", fake_fetch_skills)
+    monkeypatch.setattr(fetchers, "fetch_languages", fake_fetch_skills)
     monkeypatch.setattr(fetchers, "skill_names", lambda _frames: ["Node.js", "Scrum"])
     monkeypatch.setattr(
         fetchers,
@@ -178,3 +180,57 @@ async def test_skills_pager_uses_the_resolved_profile_id(
     assert captured == {"slug": "fixture-person", "profile_id": "ACoAATEST"}
     assert result.rsc_sections["skills"] == ["Node.js", "Scrum"]
     assert any(s.section == "skills" and s.tier == Tier.LINKEDIN_RSC for s in result.sources)
+    assert not any(w.code == "query_id_unconfigured" for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_languages_pager_uses_the_resolved_profile_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = fetchers.FetchResult()
+    captured: dict[str, object] = {}
+
+    async def fake_resolve(*_: object, **__: object) -> tuple[str, dict]:
+        return "urn:li:fsd_profile:ACoAATEST", {}
+
+    async def fake_rsc(*_: object) -> list[object]:
+        return []
+
+    async def fake_detail(_client: object, slug: str, profile_id: str, **_kw: object):
+        captured["slug"] = slug
+        captured["profile_id"] = profile_id
+        return ["frame"]
+
+    async def empty_detail(*_: object, **__: object) -> list[object]:
+        return []
+
+    monkeypatch.setattr(fetchers, "resolve_urn", fake_resolve)
+    monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
+    monkeypatch.setattr(fetchers, "fetch_skills", empty_detail)
+    monkeypatch.setattr(fetchers, "fetch_languages", fake_detail)
+    monkeypatch.setattr(fetchers, "language_values", lambda _frames: [
+        "English",
+        "Full professional proficiency",
+    ])
+    monkeypatch.setattr(
+        fetchers,
+        "configured_profile_components_query",
+        lambda *_: Query(name="test", query_id="", last_verified=date.today(), description="x"),
+    )
+
+    settings = Settings(linkedin_li_at="fixture", linkedin_jsessionid="ajax:123")
+    await fetchers._fetch_authenticated(
+        type("Client", (), {"settings": settings})(),
+        "fixture-person",
+        "page",
+        result,
+    )
+
+    assert captured == {"slug": "fixture-person", "profile_id": "ACoAATEST"}
+    assert result.rsc_sections["languages"] == [
+        "English",
+        "Full professional proficiency",
+    ]
+    language_source = next(s for s in result.sources if s.section == "languages")
+    assert language_source.tier == Tier.LINKEDIN_RSC
+    assert language_source.item_count == 1

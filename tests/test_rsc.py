@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
+from app.config import Settings
 from app.linkedin.rsc import (
     decode_flight_frames,
+    fetch_languages,
+    language_values,
     profile_component_payload,
     skill_names,
     text_fragments,
@@ -96,3 +101,64 @@ def test_skill_names_supports_plain_text_stream_shape() -> None:
     ]
 
     assert skill_names(frames) == ["Python", "Java"]
+
+
+# ---------------------------------------------------------------------------
+# Languages pagination stream
+# ---------------------------------------------------------------------------
+
+
+def test_language_values_preserve_names_and_optional_proficiencies() -> None:
+    frames = [
+        {"text": "Languages"},
+        {"text": "English"},
+        {"stringValue": "Full professional proficiency"},
+        {"text": "Hindi"},
+        {"text": "Native or bilingual proficiency"},
+        {"text": "Kannada"},
+    ]
+
+    assert language_values(frames) == [
+        "English",
+        "Full professional proficiency",
+        "Hindi",
+        "Native or bilingual proficiency",
+        "Kannada",
+    ]
+
+
+def test_language_values_deduplicate_repeated_names() -> None:
+    frames = [{"text": "French"}, {"nested": {"text": "French"}}]
+
+    assert language_values(frames) == ["French"]
+
+
+@pytest.mark.asyncio
+async def test_languages_request_targets_the_language_detail_pager() -> None:
+    captured: dict[str, object] = {}
+
+    class Session:
+        csrf_token = "ajax:123"
+
+        @staticmethod
+        def cookie_header() -> str:
+            return 'li_at=fixture; JSESSIONID="ajax:123"'
+
+    class Client:
+        settings = Settings()
+        session = Session()
+
+        async def post_stream(self, url, *, headers, payload, params):
+            captured.update(url=url, headers=headers, payload=payload, params=params)
+            return b'1:{"text":"English"}\n'
+
+    frames = await fetch_languages(Client(), "fixture-person", "ACoAATEST")
+
+    assert frames == [{"text": "English"}]
+    assert captured["headers"]["referer"].endswith("/details/languages/")
+    assert captured["headers"]["x-li-anchor-page-key"].endswith("languages_details")
+    assert captured["params"]["sduiid"].endswith("profile.details.languages")
+    assert captured["payload"]["clientArguments"]["screenId"].endswith(
+        "ProfileLanguageDetails"
+    )
+    assert "filter" not in captured["payload"]["clientArguments"]["payload"]

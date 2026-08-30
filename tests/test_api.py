@@ -71,6 +71,20 @@ def test_openapi_has_one_public_profile_operation(app_client: TestClient) -> Non
     assert "/v1/profile" not in schema["paths"]
 
 
+def test_openapi_documents_success_and_typed_failures(app_client: TestClient) -> None:
+    operation = app_client.get("/openapi.json").json()["paths"]["/profile"]["get"]
+
+    assert operation["operationId"] == "getLinkedInProfile"
+    assert operation["tags"] == ["Profiles"]
+    assert set(operation["responses"]) == {"200", "404", "422", "429", "502", "503"}
+    assert "complete" in operation["responses"]["200"]["content"]["application/json"][
+        "examples"
+    ]
+    assert operation["responses"]["404"]["content"]["application/json"]["schema"][
+        "$ref"
+    ].endswith("/ErrorResponse")
+
+
 def test_health_is_open(app_client: TestClient) -> None:
     """An uptime check must not need a credential."""
     assert app_client.get("/v1/health").status_code == 200
@@ -121,7 +135,16 @@ def test_invalid_url_is_422_with_reason(app_client: TestClient) -> None:
         headers=HEADERS,
     )
     assert resp.status_code == 422
-    assert "linkedin.com" in resp.json()["detail"]
+    assert resp.json()["error"] == "invalid_url"
+    assert "linkedin.com" in resp.json()["message"]
+
+
+def test_missing_url_uses_the_same_error_envelope(app_client: TestClient) -> None:
+    resp = app_client.get("/profile")
+
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "validation_error"
+    assert resp.json()["details"][0]["location"] == "query.url"
 
 
 def test_company_url_rejected(app_client: TestClient) -> None:
@@ -248,9 +271,14 @@ def test_health_reports_query_registry_ages(app_client: TestClient) -> None:
     assert all("age_days" in q for q in body["query_registry"])
 
 
-def test_health_warns_about_unconfigured_queries(app_client: TestClient) -> None:
+def test_health_labels_unconfigured_queries_as_optional_compatibility(
+    app_client: TestClient,
+) -> None:
     body = app_client.get("/v1/health").json()
-    assert any("no queryId configured" in w for w in body["query_registry_warnings"])
+
+    assert body["primary_extraction"] == "dash_rest_and_rsc"
+    assert body["query_registry_warnings"] == []
+    assert "Optional GraphQL compatibility" in body["query_registry_note"]
 
 
 def test_health_leaks_no_secrets(app_client: TestClient) -> None:
@@ -299,6 +327,8 @@ def test_rate_limit_returns_429_after_the_configured_budget(
     assert first.status_code == 200
     assert second.status_code == 200
     assert third.status_code == 429
+    assert third.json()["error"] == "rate_limited"
+    assert third.json()["retryable"] is True
     assert "Retry-After" in third.headers
 
     get_settings.cache_clear()

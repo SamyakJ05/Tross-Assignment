@@ -648,6 +648,31 @@ def apply_rsc_skills(profile: Profile, names: list[str]) -> Profile:
     return profile
 
 
+_LINKEDIN_LANGUAGE_PROFICIENCIES = {
+    "elementary proficiency",
+    "limited working proficiency",
+    "professional working proficiency",
+    "full professional proficiency",
+    "native or bilingual proficiency",
+}
+
+
+def apply_rsc_languages(profile: Profile, values: list[str]) -> Profile:
+    """Attach ordered name/proficiency pairs from the languages detail pager."""
+    if profile.languages:
+        return profile
+
+    languages: list[Language] = []
+    for value in values:
+        if value.casefold() in _LINKEDIN_LANGUAGE_PROFICIENCIES:
+            if languages and languages[-1].proficiency is None:
+                languages[-1].proficiency = value
+            continue
+        languages.append(Language(name=value))
+    profile.languages = languages
+    return profile
+
+
 def _dedupe_certifications(values: list[Certification]) -> list[Certification]:
     seen: set[tuple[str | None, str | None]] = set()
     return [

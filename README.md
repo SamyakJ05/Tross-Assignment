@@ -1,12 +1,15 @@
 # LinkedIn Profile API
 
+[![CI](https://github.com/SamyakJ05/Tross-Assignment/actions/workflows/ci.yml/badge.svg)](https://github.com/SamyakJ05/Tross-Assignment/actions/workflows/ci.yml)
+
 A direct-HTTP LinkedIn profile API for the Tross engineering challenge. It accepts a public LinkedIn
 profile URL and returns structured JSON. Runtime code does not launch or control a browser.
 
 The implementation uses two currently observed LinkedIn request families:
 
 - Dash REST for identity data such as name, headline, location, and profile images.
-- RSC profile-card streams for experience, education, and certifications.
+- RSC profile-card and detail-pagination streams for experience, education, certifications, skills,
+  and languages.
 
 Browser DevTools was used only while developing the request contracts. The deployed API and CLI make
 ordinary HTTP requests with the server's two session values supplied through environment variables.
@@ -16,13 +19,45 @@ ordinary HTTP requests with the server's two session values supplied through env
 [`/v1/health`](https://linkedin-profile-api-z73g.onrender.com/v1/health). A caller only supplies the
 LinkedIn profile URL; LinkedIn session credentials stay in the backend.
 
+### Try the deployed API
+
+No caller credentials are required. This example requests the deployment owner's public profile and
+pretty-prints the response locally:
+
+```bash
+curl --fail-with-body --silent --show-error --get \
+  --data-urlencode 'url=https://www.linkedin.com/in/samyakj05/' \
+  'https://linkedin-profile-api-z73g.onrender.com/profile' \
+  | python3 -m json.tool
+```
+
+The first request may take longer while Render wakes the free service and LinkedIn sections are fetched.
+Later requests for the same profile are served from the 15-minute cache.
+
+## Engineering highlights
+
+- **Direct HTTP at runtime:** Dash REST and React Server Component actions, with no browser or automation
+  driver in the deployed service.
+- **Truthful response quality:** every result carries section-level provenance, typed warnings, and a
+  `complete`, `partial`, or `needs_review` classification.
+- **Promotion history preserved:** positions remain nested under employer groups, with a derived flat view
+  for consumers that want one.
+- **Resilient cache behavior:** concurrent misses are coalesced, stale good data can survive transient
+  upstream failures, and a degraded refresh cannot replace a stronger cached result.
+- **Polite upstream access:** one process-wide pacer controls LinkedIn traffic while a separate per-client
+  rate limit prevents one caller from consuming the public API budget.
+- **Contract-first failure handling:** invalid input, caller throttling, upstream denial, checkpoints, and
+  expired sessions have stable JSON errors and documented HTTP statuses.
+- **Offline verification:** sanitized representative fixtures exercise the full parsing pipeline without
+  requiring LinkedIn credentials in CI.
+
 ## Assignment checklist
 
 | Requirement | Status |
 |---|---|
 | Public HTTPS API | Deployed on Render: https://linkedin-profile-api-z73g.onrender.com |
 | LinkedIn profile URL input | `GET /profile?url=...` |
-| Structured profile JSON | Schema includes every requested profile field |
+| Structured profile JSON | Schema models every requested field; population depends on visibility and upstream contracts |
 | Own backend credentials | Server-managed LinkedIn session |
 | Public GitHub source | Pushed to GitHub; no secrets tracked |
 | Setup, API, approach, and limitations | This README |
@@ -35,8 +70,8 @@ reports provenance and warnings instead of silently treating unavailable fields 
 Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone <your-public-repository-url>
-cd Tross-Assignment-2
+git clone https://github.com/SamyakJ05/Tross-Assignment.git
+cd Tross-Assignment
 uv sync --extra dev
 cp .env.example .env
 ```
@@ -107,6 +142,25 @@ Then use the same `curl` command above.
 `GET /v1/profile` remains as a hidden backward-compatible alias. The public OpenAPI page exposes only
 the canonical URL-only operation above.
 
+Errors use one envelope across input validation, caller throttling, and LinkedIn failures:
+
+```json
+{
+  "error": "session_expired",
+  "message": "The backend LinkedIn session has expired.",
+  "retryable": false,
+  "upstream_status": 403
+}
+```
+
+| Status | Meaning |
+|---:|---|
+| `404` | LinkedIn accepted the request but no profile was found |
+| `422` | The profile URL or query parameters are invalid |
+| `429` | The caller budget or LinkedIn upstream is rate-limited |
+| `502` | LinkedIn denied the request or returned an unexpected contract |
+| `503` | The backend session requires human attention or replacement |
+
 Example response, shortened:
 
 ```json
@@ -132,7 +186,7 @@ Example response, shortened:
     "certifications": [],
     "languages": []
   },
-  "completeness": "partial",
+  "completeness": "complete",
   "sources": [
     { "section": "top_card", "tier": "voyager_dash_rest" },
     { "section": "experience", "tier": "linkedin_rsc" }
@@ -151,8 +205,9 @@ Example response, shortened:
 
 ### `GET /v1/health`
 
-Reports version, whether a session is configured, cache state, and optional GraphQL query registry status.
-It does not expose session values.
+Reports version, primary extraction strategy, whether a session is configured, cache state, and optional
+GraphQL compatibility-registry status. Unconfigured compatibility queries are intentionally disabled and
+do not count as health warnings. The endpoint never exposes session values.
 
 ## Approach
 
@@ -160,11 +215,12 @@ It does not expose session values.
 2. Attempt Dash REST first for the top card. This preserves the tested identity request order before
    detailed cards are requested.
 3. Request three RSC profile cards directly over HTTP: experience, above activity, and below activity.
-   Separately, fetch the `/details/skills` sub-page's own RSC pagination action, which uses a different
-   shape (`actions/pagination`, not `actions/component`) that the GraphQL components query used to cover
-   before LinkedIn stopped calling it (see step 5).
+   Separately, fetch the `/details/skills` and `/details/languages` RSC pagination actions. Detail pages
+   use `actions/pagination`, not the cards' `actions/component` contract, and are keyed by the resolved
+   member profile ID rather than only the vanity slug.
 4. Parse visible card strings into grouped positions, education, and certifications without fabricating
-   unavailable values. Parse skill names from the pagination stream's endorse-button labels.
+   unavailable values. Parse skills from endorse-button labels and languages as ordered name/proficiency
+   pairs, retaining `null` when no proficiency is visible.
 5. Optionally use a configured GraphQL query as a compatibility path for additional sections.
 6. Return source provenance, warnings, and a completeness state with the normalized profile.
 
@@ -181,9 +237,9 @@ uv run pytest -q
 uv build
 ```
 
-The suite includes the public URL-only API contract, cache behavior, URL validation, session header handling,
-RSC stream decoding, current RSC card layouts, promotion grouping, mapper behavior, CLI output, and error
-classification.
+The suite includes the public URL-only and OpenAPI contracts, cache behavior, URL validation, stable error
+envelopes, session header handling, RSC card and detail-pager requests, skills and language parsing, promotion
+grouping, mapper behavior, CLI output, and upstream error classification.
 
 Before submitting:
 
@@ -213,7 +269,7 @@ Render supplies `PORT`; the start command binds to it automatically. Callers pro
 - A session can be challenged or rejected after an upstream sequence changes. Refresh the two session values
   in a normal browser before retrying. Do not add a login flow to this API.
 - Field visibility is account-, relationship-, locale-, and experiment-dependent. Missing `about`, skills,
-  languages, or images means the current cards did not expose an unambiguous value; the service does not
+  languages, or images means the current endpoints did not expose an unambiguous value; the service does not
   invent one.
 - Dates parsed from RSC display strings are best-effort and currently assume English month names.
 - The in-memory cache is intentionally short-lived and per-process. It is not a persistent profile database.
@@ -224,11 +280,14 @@ Render supplies `PORT`; the start command binds to it automatically. Callers pro
   all. It has moved to per-section RSC pagination actions instead, the same way experience and
   education already work in this codebase. Skills now has its own RSC path (`app/linkedin/rsc.py`'s
   `fetch_skills`/`skill_names`, keyed off the member's `profileId` rather than the vanity slug).
-  Languages, projects, honors, publications, and volunteer experience still have no working source and
-  will be empty for every profile; each would need its own `/details/<section>` pagination action
-  captured from DevTools the same way skills was, since the GraphQL route they were meant to use is
-  believed dead. Education and certifications are still partially covered by the RSC below-activity
-  card's regex heuristics in the meantime.
+  Languages now use their own `/details/languages` pagination action alongside skills. Projects, honors,
+  publications, and volunteer experience still have no current source and will remain empty; each needs
+  its own detail action captured from DevTools because the GraphQL route they were meant to use appears
+  inactive. Education and certifications remain partially covered by the lower RSC card's regex heuristics.
+- The languages pager follows the current detail-section contract and is covered by request-shape and parser
+  contract tests. Treat a section-level `unexpected_payload` warning as evidence that LinkedIn changed the
+  pager or screen identifier, then refresh a sanitized fixture from an authorized profile before updating
+  the parser.
 - The skills RSC path fetches up to 100 skills in one bounded page and cannot recover endorsement counts;
   those require a different response shape. Endorsement counts remain `null` regardless of visibility.
 

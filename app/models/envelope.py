@@ -49,6 +49,9 @@ class Completeness(StrEnum):
     NEEDS_REVIEW = "needs_review"
 
 
+_PRIMARY_TIERS = {Tier.VOYAGER_GRAPHQL, Tier.LINKEDIN_RSC, Tier.VOYAGER_DASH_REST}
+
+
 class SectionSource(BaseModel):
     """Provenance for one section of the profile.
 
@@ -79,6 +82,22 @@ class Warning(BaseModel):
     section: str | None = None
 
 
+class ValidationIssue(BaseModel):
+    location: str
+    message: str
+    type: str
+
+
+class ErrorResponse(BaseModel):
+    """Stable error envelope shared by input, rate-limit, and upstream failures."""
+
+    error: str
+    message: str
+    retryable: bool = False
+    upstream_status: int | None = None
+    details: list[ValidationIssue] | None = None
+
+
 class ProfileResponse(BaseModel):
     profile: Profile
     completeness: Completeness
@@ -90,7 +109,7 @@ class ProfileResponse(BaseModel):
     @property
     def degraded_sections(self) -> list[str]:
         """Sections that did not come from the primary authenticated tier."""
-        return [s.section for s in self.sources if s.tier is not Tier.VOYAGER_GRAPHQL]
+        return [s.section for s in self.sources if s.tier not in _PRIMARY_TIERS]
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +164,7 @@ def assess(
             )
         )
 
-    primary_tiers = {Tier.VOYAGER_GRAPHQL, Tier.LINKEDIN_RSC}
-    degraded = [s for s in sources if s.tier not in primary_tiers]
+    degraded = [s for s in sources if s.tier not in _PRIMARY_TIERS]
     for s in degraded:
         found.append(
             Warning(

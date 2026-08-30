@@ -29,6 +29,17 @@ def test_complete_when_primary_tier_and_core_fields_present() -> None:
     assert warnings == []
 
 
+def test_complete_when_modern_dash_and_rsc_tiers_supply_the_profile() -> None:
+    completeness, warnings = assess(
+        _full_profile(),
+        _sources(Tier.VOYAGER_DASH_REST, Tier.LINKEDIN_RSC),
+        [],
+    )
+
+    assert completeness is Completeness.COMPLETE
+    assert warnings == []
+
+
 def test_partial_when_any_section_used_a_fallback() -> None:
     completeness, warnings = assess(
         _full_profile(),
@@ -100,7 +111,8 @@ def test_degraded_sections_property() -> None:
         profile=_full_profile(),
         completeness=Completeness.PARTIAL,
         sources=[
-            SectionSource(section="top_card", tier=Tier.VOYAGER_GRAPHQL),
+            SectionSource(section="top_card", tier=Tier.VOYAGER_DASH_REST),
+            SectionSource(section="experience", tier=Tier.LINKEDIN_RSC),
             SectionSource(section="skills", tier=Tier.PUBLIC_JSONLD),
         ],
     )

@@ -16,6 +16,7 @@ from app.models.envelope import ProfileResponse, assess
 from app.parsing.mappers import (
     apply_rsc_below_activity,
     apply_rsc_experience,
+    apply_rsc_languages,
     apply_rsc_skills,
     apply_sections,
     map_jsonld,
@@ -66,6 +67,8 @@ async def get_profile(
         profile = apply_rsc_below_activity(profile, raw.rsc_sections["below_activity"])
     if profile and raw.rsc_sections.get("skills"):
         profile = apply_rsc_skills(profile, raw.rsc_sections["skills"])
+    if profile and raw.rsc_sections.get("languages"):
+        profile = apply_rsc_languages(profile, raw.rsc_sections["languages"])
 
     # Public tier fills gaps, or stands alone if nothing else answered.
     if raw.public_html:

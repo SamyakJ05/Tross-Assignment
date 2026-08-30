@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.cache import TTLCache
@@ -21,7 +22,7 @@ from app.linkedin.errors import (
 )
 from app.linkedin.queries import registry_status
 from app.linkedin.resolver import InvalidProfileURL, extract_slug
-from app.models.envelope import ProfileResponse
+from app.models.envelope import ErrorResponse, ProfileResponse
 from app.ratelimit import enforce_rate_limit
 from app.service import get_profile
 
@@ -42,6 +43,10 @@ app = FastAPI(
         "Every response reports which tier answered and how complete the result is, because "
         "LinkedIn's dominant failure mode is a 200 carrying degraded data rather than an error."
     ),
+    openapi_tags=[
+        {"name": "Profiles", "description": "Structured LinkedIn profile extraction."},
+        {"name": "Operations", "description": "Safe service health and maintenance signals."},
+    ],
 )
 
 _cache: TTLCache[ProfileResponse] = TTLCache(
@@ -94,9 +99,173 @@ async def _linkedin_error_handler(_, exc: LinkedInError) -> JSONResponse:
     )
 
 
+@app.exception_handler(HTTPException)
+async def _http_error_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    """Keep application-generated input and rate-limit failures consistent."""
+    error = (
+        "rate_limited"
+        if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+        else "invalid_url"
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=exc.headers,
+        content=ErrorResponse(
+            error=error,
+            message=str(exc.detail),
+            retryable=exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS,
+        ).model_dump(mode="json", exclude_none=True),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    details = [
+        {
+            "location": ".".join(str(part) for part in error["loc"]),
+            "message": error["msg"],
+            "type": error["type"],
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content=ErrorResponse(
+            error="validation_error",
+            message="One or more request parameters are invalid.",
+            details=details,
+        ).model_dump(mode="json", exclude_none=True),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+_PROFILE_RESPONSES: dict[int | str, dict[str, object]] = {
+    200: {
+        "description": "A profile plus completeness, provenance, warnings, and cache metadata.",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "complete": {
+                        "summary": "Authenticated sections resolved",
+                        "value": {
+                            "profile": {
+                                "public_identifier": "samyakj05",
+                                "full_name": "Samyak Jain",
+                                "headline": "Software Engineer",
+                                "location": {"display": "India"},
+                                "position_groups": [
+                                    {
+                                        "company_name": "Northwind",
+                                        "positions": [
+                                            {
+                                                "title": "Software Engineer",
+                                                "dates": {
+                                                    "start_year": 2024,
+                                                    "is_current": True,
+                                                },
+                                            }
+                                        ],
+                                    }
+                                ],
+                                "educations": [],
+                                "skills": [{"name": "Python", "endorsement_count": None}],
+                                "certifications": [],
+                                "languages": [
+                                    {
+                                        "name": "English",
+                                        "proficiency": "Full professional proficiency",
+                                    }
+                                ],
+                            },
+                            "completeness": "complete",
+                            "sources": [
+                                {"section": "top_card", "tier": "voyager_dash_rest"},
+                                {"section": "experience", "tier": "linkedin_rsc"},
+                                {"section": "languages", "tier": "linkedin_rsc"},
+                            ],
+                            "warnings": [],
+                            "cached": False,
+                            "elapsed_ms": 842,
+                        },
+                    },
+                    "partial": {
+                        "summary": "Useful fallback data with explicit quality metadata",
+                        "value": {
+                            "profile": {"public_identifier": "example"},
+                            "completeness": "needs_review",
+                            "sources": [],
+                            "warnings": [
+                                {
+                                    "code": "missing_core_field",
+                                    "message": "'full_name' is absent.",
+                                    "section": "full_name",
+                                }
+                            ],
+                            "cached": False,
+                        },
+                    },
+                }
+            }
+        },
+    },
+    404: {
+        "model": ErrorResponse,
+        "description": "The LinkedIn profile could not be found.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "error": "not_found",
+                    "message": "The requested profile was not found.",
+                    "retryable": False,
+                    "upstream_status": 404,
+                }
+            }
+        },
+    },
+    422: {
+        "model": ErrorResponse,
+        "description": "The URL or query parameters are invalid.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "error": "invalid_url",
+                    "message": "Expected a linkedin.com profile URL.",
+                    "retryable": False,
+                }
+            }
+        },
+    },
+    429: {
+        "model": ErrorResponse,
+        "description": "The caller or LinkedIn upstream is rate-limited.",
+        "headers": {
+            "Retry-After": {
+                "description": "Seconds before the caller budget resets, when available.",
+                "schema": {"type": "integer"},
+            }
+        },
+        "content": {
+            "application/json": {
+                "example": {
+                    "error": "rate_limited",
+                    "message": "Rate limit exceeded for this client.",
+                    "retryable": True,
+                }
+            }
+        },
+    },
+    502: {
+        "model": ErrorResponse,
+        "description": "LinkedIn denied the request or returned an unexpected contract.",
+    },
+    503: {
+        "model": ErrorResponse,
+        "description": "The backend LinkedIn session needs attention before retrying.",
+    },
+}
 
 
 async def _lock_for(slug: str) -> asyncio.Lock:
@@ -147,6 +316,14 @@ async def _profile_response(url: str, refresh: bool) -> ProfileResponse:
     response_model=ProfileResponse,
     dependencies=[Depends(enforce_rate_limit)],
     summary="Fetch a LinkedIn profile as structured JSON",
+    description=(
+        "Fetch one profile through direct LinkedIn HTTP contracts. The response always includes "
+        "quality and provenance metadata; an HTTP 200 does not imply every optional field "
+        "was visible."
+    ),
+    operation_id="getLinkedInProfile",
+    tags=["Profiles"],
+    responses=_PROFILE_RESPONSES,
 )
 async def profile(
     url: str = Query(
@@ -176,14 +353,14 @@ async def profile_v1_alias(url: str = Query(...), refresh: bool = Query(False)) 
     return await _profile_response(url, refresh)
 
 
-@app.get("/v1/health", summary="Service and upstream health")
+@app.get("/v1/health", summary="Service and upstream health", tags=["Operations"])
 async def health() -> dict[str, object]:
-    """Operational state, including the thing most likely to break.
+    """Operational state, including optional compatibility-route freshness.
 
-    The queryId ages are the point of this endpoint. A hash that has not
-    been verified in weeks is the leading indicator of silent extraction
-    failure, and surfacing it here means staleness is visible before a
-    consumer notices bad data.
+    Modern extraction uses Dash REST and RSC and does not require a GraphQL
+    queryId. The registry remains visible because a configured compatibility
+    query becoming stale is useful maintenance information, but an
+    intentionally unconfigured query is not a health warning.
 
     Unauthenticated by design so an uptime check can hit it. It exposes no
     profile data and no secrets -- only whether a session is configured.
@@ -195,9 +372,7 @@ async def health() -> dict[str, object]:
 
     warnings: list[str] = []
     for q in registry:
-        if not q["configured"]:
-            warnings.append(f"{q['key']}: no queryId configured")
-        elif q["stale"]:
+        if q["configured"] and q["stale"]:
             warnings.append(f"{q['key']}: last verified {q['age_days']} days ago")
 
     return {
@@ -207,8 +382,12 @@ async def health() -> dict[str, object]:
         "public_fallback_enabled": settings.enable_public_fallback,
         "cache_entries": _cache.size,
         "cache_ttl_seconds": settings.cache_ttl_seconds,
+        "primary_extraction": "dash_rest_and_rsc",
         "query_registry": registry,
         "query_registry_warnings": warnings,
+        "query_registry_note": (
+            "Optional GraphQL compatibility paths; unconfigured entries do not affect health."
+        ),
     }
 
 

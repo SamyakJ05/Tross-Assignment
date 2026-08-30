@@ -7,6 +7,7 @@ import pytest
 from app.config import Settings
 from app.linkedin.client import LinkedInClient, Pacer
 from app.linkedin.fetchers import FetchResult
+from app.models.domain import Profile
 from app.models.envelope import Completeness, SectionSource, Tier
 from app.service import get_profile
 
@@ -48,7 +49,7 @@ async def test_service_assembles_authenticated_sections(
     assert response.profile.position_groups
     assert response.profile.educations
     assert response.profile.skills
-    assert response.completeness is Completeness.PARTIAL
+    assert response.completeness is Completeness.COMPLETE
     assert [source.section for source in response.sources] == [
         "top_card",
         "experience",
@@ -113,3 +114,33 @@ async def test_get_profile_forwards_an_explicit_pacer_to_the_client(
     await get_profile("fixture-person", settings, pacer=shared_pacer)
 
     assert seen_pacers == [shared_pacer]
+
+
+@pytest.mark.asyncio
+async def test_service_attaches_rsc_languages_with_optional_proficiency(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+) -> None:
+    raw = FetchResult()
+    raw.top_card = {"included": []}
+    raw.rsc_sections["languages"] = [
+        "English",
+        "Full professional proficiency",
+        "Kannada",
+    ]
+
+    async def fake_fetch_profile(*_: object) -> FetchResult:
+        return raw
+
+    monkeypatch.setattr("app.service.fetch_profile", fake_fetch_profile)
+    monkeypatch.setattr(
+        "app.service.map_top_card",
+        lambda _payload, slug: Profile(public_identifier=slug),
+    )
+
+    response = await get_profile("fixture-person", settings)
+
+    assert [(item.name, item.proficiency) for item in response.profile.languages] == [
+        ("English", "Full professional proficiency"),
+        ("Kannada", None),
+    ]

@@ -26,6 +26,7 @@ PROFILE_CARDS_BELOW_ACTIVITY = (
     "com.linkedin.sdui.generated.profile.dsl.impl.profileCardsBelowActivityPart1WithoutExp"
 )
 SKILLS_PAGER_ID = "com.linkedin.sdui.pagers.profile.details.skills"
+LANGUAGES_PAGER_ID = "com.linkedin.sdui.pagers.profile.details.languages"
 
 
 def _base64_token(byte_count: int = 16) -> str:
@@ -147,7 +148,7 @@ async def fetch_profile_component(
 
 
 # ---------------------------------------------------------------------------
-# Skills: a paginated list, not a card
+# Detail sections: paginated lists, not cards
 #
 # The profile-components GraphQL query that used to carry skills no longer
 # fires at all (see app/linkedin/queries.py); LinkedIn's current /details
@@ -158,29 +159,38 @@ async def fetch_profile_component(
 # ---------------------------------------------------------------------------
 
 
-def _skill_pager_payload(slug: str, profile_id: str, *, start: int, count: int) -> dict[str, Any]:
+def _detail_pager_payload(
+    slug: str,
+    profile_id: str,
+    *,
+    pager_id: str,
+    screen_id: str,
+    start: int,
+    count: int,
+    extra_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = {
         "vanityName": slug,
         "profileId": profile_id,
         "start": start,
         "count": count,
-        "filter": "ProfileSkillCategory_ALL",
+        **(extra_payload or {}),
     }
     request_metadata = {"$type": "proto.sdui.common.RequestMetadata"}
     return {
-        "pagerId": SKILLS_PAGER_ID,
+        "pagerId": pager_id,
         "clientArguments": {
             "$type": "proto.sdui.actions.requests.RequestedArguments",
             "requestedStateKeys": [],
             "payload": payload,
             "requestMetadata": request_metadata,
             "states": [],
-            "screenId": "com.linkedin.sdui.flagshipnav.profile.ProfileSkillDetails",
+            "screenId": screen_id,
             "knownTemplateIds": [],
         },
         "paginationRequest": {
             "$type": "proto.sdui.actions.requests.PaginationRequest",
-            "pagerId": SKILLS_PAGER_ID,
+            "pagerId": pager_id,
             "trigger": {
                 "$case": "itemDistanceTrigger",
                 "itemDistanceTrigger": {
@@ -200,8 +210,12 @@ def _skill_pager_payload(slug: str, profile_id: str, *, start: int, count: int) 
     }
 
 
-def _skills_pagination_headers(client: LinkedInClient, slug: str) -> dict[str, str]:
-    """Like rsc_headers, but scoped to the /details/skills sub-page.
+def _detail_pagination_headers(
+    client: LinkedInClient,
+    slug: str,
+    section: str,
+) -> dict[str, str]:
+    """Like rsc_headers, but scoped to one /details section sub-page.
 
     The anchor page key changes to match ("..._skills_details"), and the
     referer points at the detail sub-page rather than the profile root --
@@ -212,7 +226,7 @@ def _skills_pagination_headers(client: LinkedInClient, slug: str) -> dict[str, s
     span_id = secrets.token_hex(8)
     page_tracking_id = _base64_token()
     version = settings.linkedin_rsc_application_version
-    anchor_page_key = "d_flagship3_profile_view_base_skills_details"
+    anchor_page_key = f"d_flagship3_profile_view_base_{section}_details"
     track = {
         "clientVersion": version,
         "mpVersion": version,
@@ -231,7 +245,7 @@ def _skills_pagination_headers(client: LinkedInClient, slug: str) -> dict[str, s
         "accept": "*/*",
         "content-type": "application/json",
         "origin": "https://www.linkedin.com",
-        "referer": f"https://www.linkedin.com/in/{slug}/details/skills/",
+        "referer": f"https://www.linkedin.com/in/{slug}/details/{section}/",
         "user-agent": settings.user_agent,
         "accept-language": "en-US,en;q=0.9",
         "x-li-rsc-stream": "true",
@@ -265,10 +279,45 @@ async def fetch_skills(
     """
     raw = await client.post_stream(
         RSC_PAGINATION_URL,
-        headers=_skills_pagination_headers(client, slug),
-        payload=_skill_pager_payload(slug, profile_id, start=0, count=count),
+        headers=_detail_pagination_headers(client, slug, "skills"),
+        payload=_detail_pager_payload(
+            slug,
+            profile_id,
+            pager_id=SKILLS_PAGER_ID,
+            screen_id="com.linkedin.sdui.flagshipnav.profile.ProfileSkillDetails",
+            start=0,
+            count=count,
+            extra_payload={"filter": "ProfileSkillCategory_ALL"},
+        ),
         params={
             "sduiid": SKILLS_PAGER_ID,
+            "parentSpanId": _base64_token(8),
+        },
+    )
+    return decode_flight_frames(raw)
+
+
+async def fetch_languages(
+    client: LinkedInClient,
+    slug: str,
+    profile_id: str,
+    *,
+    count: int = 100,
+) -> list[Any]:
+    """Fetch the languages detail page's first bounded result page."""
+    raw = await client.post_stream(
+        RSC_PAGINATION_URL,
+        headers=_detail_pagination_headers(client, slug, "languages"),
+        payload=_detail_pager_payload(
+            slug,
+            profile_id,
+            pager_id=LANGUAGES_PAGER_ID,
+            screen_id="com.linkedin.sdui.flagshipnav.profile.ProfileLanguageDetails",
+            start=0,
+            count=count,
+        ),
+        params={
+            "sduiid": LANGUAGES_PAGER_ID,
             "parentSpanId": _base64_token(8),
         },
     )
@@ -319,6 +368,47 @@ def skill_names(frames: list[Any]) -> list[str]:
         for value in visible_strings(frames)
         if not value.startswith(("{", "[")) and value.lower() not in {"skills", "show all skills"}
     ]
+
+
+_LANGUAGE_UI_LABELS = {
+    "languages",
+    "show all languages",
+    "show fewer languages",
+    "expanded",
+    "collapsed",
+}
+_LANGUAGE_PROFICIENCIES = {
+    "elementary proficiency",
+    "limited working proficiency",
+    "professional working proficiency",
+    "full professional proficiency",
+    "native or bilingual proficiency",
+}
+
+
+def language_values(frames: list[Any]) -> list[str]:
+    """Return ordered language names and proficiency labels from an RSC stream.
+
+    The language detail pager renders each row as a name followed by an
+    optional LinkedIn proficiency label. Keeping that order lets the domain
+    mapper preserve languages whose proficiency is not visible rather than
+    inventing a value.
+    """
+    found: list[str] = []
+    seen_names: set[str] = set()
+    for value in visible_strings(frames):
+        cleaned = value.strip()
+        lowered = cleaned.casefold()
+        if lowered in _LANGUAGE_UI_LABELS:
+            continue
+        if lowered in _LANGUAGE_PROFICIENCIES:
+            if found and found[-1].casefold() not in _LANGUAGE_PROFICIENCIES:
+                found.append(cleaned)
+            continue
+        if cleaned not in seen_names:
+            seen_names.add(cleaned)
+            found.append(cleaned)
+    return found
 
 
 def decode_flight_frames(raw: bytes) -> list[Any]:
