@@ -255,13 +255,13 @@ async def fetch_skills(
     slug: str,
     profile_id: str,
     *,
-    count: int = 50,
+    count: int = 100,
 ) -> list[Any]:
     """Fetch and decode the skills detail page's first page of results.
 
-    Only the first `count` skills are fetched -- a profile with more than
-    that is truncated rather than paginated further, consistent with this
-    module treating each lookup as a single request rather than a crawl.
+    Up to `count` skills are fetched in one bounded request. The default is
+    high enough for ordinary profiles without turning the lookup into an
+    unbounded crawl.
     """
     raw = await client.post_stream(
         RSC_PAGINATION_URL,
@@ -308,7 +308,17 @@ def skill_names(frames: list[Any]) -> list[str]:
 
     for frame in frames:
         walk(frame)
-    return found
+    if found:
+        return found
+
+    # A second currently observed stream shape renders each skill as plain
+    # visible text and omits the endorse button entirely. This is the shape
+    # returned for some viewer/session combinations.
+    return [
+        value
+        for value in visible_strings(frames)
+        if not value.startswith(("{", "[")) and value.lower() not in {"skills", "show all skills"}
+    ]
 
 
 def decode_flight_frames(raw: bytes) -> list[Any]:

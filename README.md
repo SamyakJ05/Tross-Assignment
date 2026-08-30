@@ -9,22 +9,21 @@ The implementation uses two currently observed LinkedIn request families:
 - RSC profile-card streams for experience, education, and certifications.
 
 Browser DevTools was used only while developing the request contracts. The deployed API and CLI make
-ordinary HTTP requests with the two session values supplied through environment variables or the POST body.
+ordinary HTTP requests with the server's two session values supplied through environment variables.
 
-**Live deployment:** https://linkedin-profile-api-z73g.onrender.com — interactive docs at
-[`/docs`](https://linkedin-profile-api-z73g.onrender.com/docs), unauthenticated health check at
-[`/v1/health`](https://linkedin-profile-api-z73g.onrender.com/v1/health). `/v1/profile` requires an
-`X-API-Key`; request one from the maintainer rather than expecting the example key in `.env.example`
-to work.
+**Live deployment:** https://linkedin-profile-api-z73g.onrender.com. Interactive docs are at
+[`/docs`](https://linkedin-profile-api-z73g.onrender.com/docs), and health check at
+[`/v1/health`](https://linkedin-profile-api-z73g.onrender.com/v1/health). A caller only supplies the
+LinkedIn profile URL; LinkedIn session credentials stay in the backend.
 
 ## Assignment checklist
 
 | Requirement | Status |
 |---|---|
 | Public HTTPS API | Deployed on Render: https://linkedin-profile-api-z73g.onrender.com |
-| LinkedIn profile URL input | `GET /v1/profile?url=...` |
+| LinkedIn profile URL input | `GET /profile?url=...` |
 | Structured profile JSON | Schema includes every requested profile field |
-| Own backend credentials | Server-managed or caller-provided LinkedIn session support |
+| Own backend credentials | Server-managed LinkedIn session |
 | Public GitHub source | Pushed to GitHub; no secrets tracked |
 | Setup, API, approach, and limitations | This README |
 
@@ -45,16 +44,12 @@ cp .env.example .env
 Configure `.env` locally. Never commit it.
 
 ```dotenv
-# Required for server-managed GET requests.
+# Required for full profile results.
 LINKEDIN_LI_AT=
 LINKEDIN_JSESSIONID=
-
-# Required by the HTTP API. Use a long random value.
-API_KEYS=replace-with-a-long-random-api-key
 ```
 
-The API constructs the request Cookie header from these two values. Use the POST endpoint below when each
-caller should supply their own session instead of storing one on the server.
+The API constructs LinkedIn request headers from these backend-only values. Callers never send them.
 
 ### Run the HTTP API
 
@@ -65,22 +60,23 @@ uv run uvicorn app.main:app --reload
 Open `http://127.0.0.1:8000/docs` for the interactive OpenAPI interface.
 
 ```bash
-curl -s \
-  -H 'X-API-Key: replace-with-a-long-random-api-key' \
-  'http://127.0.0.1:8000/v1/profile?url=https%3A%2F%2Fwww.linkedin.com%2Fin%2Fexample%2F'
+curl -s --get \
+  --data-urlencode 'url=https://www.linkedin.com/in/example/' \
+  'http://127.0.0.1:8000/profile'
 ```
 
 Use `refresh=true` only when deliberately making a new upstream request. Normal requests use the
-15-minute in-memory cache. A lower-quality refresh result never overwrites a stronger cached result.
+15-minute in-memory cache. A lower-quality refresh never replaces a stronger cached result, and a good
+expired result can be served for up to 24 hours if LinkedIn fails transiently.
 
 One `Pacer` (see `app/linkedin/client.py`) is shared by every request the process handles, so the
-minimum-interval throttle to LinkedIn is process-wide rather than reset per request. Independently,
-each `X-API-Key` gets its own request budget (`RATE_LIMIT_PER_MINUTE`, default 20/minute) so one
-caller cannot consume the whole shared LinkedIn-facing budget alone.
+minimum-interval throttle to LinkedIn is process-wide rather than reset per request. Identical concurrent
+lookups are coalesced. Each client IP gets its own request budget (`RATE_LIMIT_PER_MINUTE`, default
+20/minute).
 
 ### Run the CLI
 
-The CLI uses the same direct-HTTP service but does not require an API key because it is local.
+The CLI uses the same direct-HTTP service.
 
 ```bash
 uv run linkedin-profile https://www.linkedin.com/in/example/
@@ -101,51 +97,15 @@ Then use the same `curl` command above.
 
 ## API
 
-### `GET /v1/profile`
+### `GET /profile`
 
 | Input | Required | Description |
 |---|---:|---|
 | `url` | Yes | Full LinkedIn profile URL or public identifier |
 | `refresh` | No | Bypass the cache and attempt a new upstream fetch |
-| `X-API-Key` | Yes | One value from `API_KEYS` |
 
-### `POST /v1/profile` with your own session
-
-Use this endpoint when testing with your own LinkedIn session instead of the server's `.env` session.
-The credential values are accepted only in the JSON request body, are marked write-only in OpenAPI, are not
-cached, and are never returned by the API. Do not send them in the URL or through `GET` query parameters.
-
-```bash
-curl -sS -X POST 'http://127.0.0.1:8000/v1/profile' \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: replace-with-a-long-random-api-key' \
-  --data '{
-    "url": "https://www.linkedin.com/in/example/",
-    "credentials": {
-      "LINKEDIN_LI_AT": "your-li-at-value",
-      "LINKEDIN_JSESSIONID": "your-jsessionid-value"
-    }
-  }'
-```
-
-Both values are required. The API constructs the necessary Cookie header internally; do not send a complete
-browser Cookie header.
-
-#### Find the two values in Chrome
-
-Use only a LinkedIn account you own or are authorized to use. Never paste the values into Git, screenshots,
-issue trackers, or chat.
-
-1. Sign in to LinkedIn in Chrome and open a profile page normally.
-2. Open DevTools with `Option` + `Command` + `I`.
-3. Open **Application** → **Storage** → **Cookies** →
-   `https://www.linkedin.com`. Copy the `Value` cells for `li_at` and `JSESSIONID` into
-   `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID`.
-4. Send the POST request only to `https://` in a deployed environment. `http://127.0.0.1` is appropriate
-   only for local testing.
-
-If LinkedIn returns `challenge_required`, `session_expired`, `unexpected_redirect`, or `request_denied`, sign
-in normally, complete any challenge, capture a fresh session, and retry later. Do not automate the login flow.
+`GET /v1/profile` remains as a hidden backward-compatible alias. The public OpenAPI page exposes only
+the canonical URL-only operation above.
 
 Example response, shortened:
 
@@ -189,15 +149,10 @@ Example response, shortened:
 - `needs_review`: the upstream response was incomplete or suspicious, for example RSC data without a
   name because Dash redirected.
 
-### `DELETE /v1/profile`
-
-Purges the in-memory cache entry for one profile URL. This is included because cached profile data needs a
-direct deletion path.
-
 ### `GET /v1/health`
 
-Unauthenticated. Reports version, whether a session is configured, cache state, and optional GraphQL query
-registry status. It does not expose session values or API keys.
+Reports version, whether a session is configured, cache state, and optional GraphQL query registry status.
+It does not expose session values.
 
 ## Approach
 
@@ -205,7 +160,7 @@ registry status. It does not expose session values or API keys.
 2. Attempt Dash REST first for the top card. This preserves the tested identity request order before
    detailed cards are requested.
 3. Request three RSC profile cards directly over HTTP: experience, above activity, and below activity.
-   Separately, fetch the `/details/skills` sub-page's own RSC pagination action -- a different action
+   Separately, fetch the `/details/skills` sub-page's own RSC pagination action, which uses a different
    shape (`actions/pagination`, not `actions/component`) that the GraphQL components query used to cover
    before LinkedIn stopped calling it (see step 5).
 4. Parse visible card strings into grouped positions, education, and certifications without fabricating
@@ -226,35 +181,30 @@ uv run pytest -q
 uv build
 ```
 
-The suite includes API authentication and cache behavior, URL validation, session header handling, RSC
-stream decoding, current RSC card layouts, promotion grouping, request-scoped credential handling, mapper
-behavior, CLI output, and error classification.
+The suite includes the public URL-only API contract, cache behavior, URL validation, session header handling,
+RSC stream decoding, current RSC card layouts, promotion grouping, mapper behavior, CLI output, and error
+classification.
 
 Before submitting:
 
 1. Run the three commands above.
 2. Run one local API request with a fresh burner session and confirm the response fields and `sources`.
 3. Confirm `git status --short` is empty and `git ls-files .env` prints nothing.
-4. Push the repository publicly to GitHub. **Done** — see the live deployment link above.
+4. Push the repository publicly to GitHub. **Done**. See the live deployment link above.
 5. Deploy the `render.yaml` blueprint and set the listed secrets in Render. **Done.**
-6. Confirm `<render-url>/v1/health` and one authenticated `GET /v1/profile` request over HTTPS. **Done**
-   — both verified against the live deployment above; rotate the `API_KEYS` secret in Render before
-   final submission since a placeholder value was used during development.
+6. Confirm `<render-url>/v1/health` and one `GET /profile?url=...` request over HTTPS.
 
 ## Render deployment
 
-Deployed at https://linkedin-profile-api-z73g.onrender.com. `render.yaml` creates the web service with
-only the API-access secret. The caller-provided POST flow needs no LinkedIn credentials on Render. Add
-the two optional LinkedIn secrets manually only if you later want the server-managed GET flow:
+Deployed at https://linkedin-profile-api-z73g.onrender.com. `render.yaml` creates the web service. Add
+the two LinkedIn secrets in the Render dashboard; they are never stored in the blueprint or repository:
 
 | Secret | Required |
 |---|---:|
-| `API_KEYS` | Required |
-| `LINKEDIN_LI_AT` | Optional: enables server-managed GET requests |
-| `LINKEDIN_JSESSIONID` | Optional: enables server-managed GET requests |
+| `LINKEDIN_LI_AT` | Required for full profile results |
+| `LINKEDIN_JSESSIONID` | Required for full profile results |
 
-Render supplies `PORT`; the start command binds to it automatically. The public endpoint remains protected
-by `X-API-Key`.
+Render supplies `PORT`; the start command binds to it automatically. Callers provide only a LinkedIn URL.
 
 ## Limitations
 
@@ -262,8 +212,6 @@ by `X-API-Key`.
   redirects, checkpoints, throttling, and changed payloads.
 - A session can be challenged or rejected after an upstream sequence changes. Refresh the two session values
   in a normal browser before retrying. Do not add a login flow to this API.
-- The request-scoped credential endpoint is for controlled testing. A public deployment must use HTTPS and
-  an API key; callers should provide only their own authorized session and treat it as a password.
 - Field visibility is account-, relationship-, locale-, and experiment-dependent. Missing `about`, skills,
   languages, or images means the current cards did not expose an unambiguous value; the service does not
   invent one.
@@ -273,7 +221,7 @@ by `X-API-Key`.
   API surfaces that as a typed response instead of parsing an error page as profile data.
 - The GraphQL tier (`app/linkedin/queries.py`) ships with every `query_id` blank, and evidence from live
   capture is that LinkedIn's current profile UI no longer calls the old `profileComponents` query at
-  all -- it has moved to per-section RSC pagination actions instead, the same way experience and
+  all. It has moved to per-section RSC pagination actions instead, the same way experience and
   education already work in this codebase. Skills now has its own RSC path (`app/linkedin/rsc.py`'s
   `fetch_skills`/`skill_names`, keyed off the member's `profileId` rather than the vanity slug).
   Languages, projects, honors, publications, and volunteer experience still have no working source and
@@ -281,15 +229,13 @@ by `X-API-Key`.
   captured from DevTools the same way skills was, since the GraphQL route they were meant to use is
   believed dead. Education and certifications are still partially covered by the RSC below-activity
   card's regex heuristics in the meantime.
-- The skills RSC path fetches only the first 50 skills in one page (no multi-page crawl) and cannot
-  recover endorsement counts -- those require a different response shape than what's captured today. A
-  profile with more than 50 skills will show only the first 50, and endorsement counts will always be
-  `null` regardless of visibility.
+- The skills RSC path fetches up to 100 skills in one bounded page and cannot recover endorsement counts;
+  those require a different response shape. Endorsement counts remain `null` regardless of visibility.
 
 ## Security
 
-`.env`, virtual environments, build artifacts, and OS metadata are ignored by Git. The API fails closed if
-`API_KEYS` is unset. Secrets are never returned from `/v1/health`, logged by the application, or included
-in the repository.
+`.env`, virtual environments, build artifacts, and OS metadata are ignored by Git. LinkedIn session values
+are backend-only and are never returned from `/v1/health`, logged by the application, or included in the
+repository. The public endpoint is rate-limited by client IP.
 
 Built for the Tross Software Engineer hiring challenge.

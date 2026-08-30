@@ -27,7 +27,13 @@ from typing import Any
 from selectolax.parser import HTMLParser
 
 from app.linkedin.client import LinkedInClient
-from app.linkedin.errors import LinkedInError, NotFound, StaleQueryId, UnexpectedPayload
+from app.linkedin.errors import (
+    LinkedInError,
+    NotFound,
+    SessionExpired,
+    StaleQueryId,
+    UnexpectedPayload,
+)
 from app.linkedin.queries import (
     SECTION_KEYS,
     Query,
@@ -91,6 +97,7 @@ async def fetch_profile(client: LinkedInClient, slug: str) -> FetchResult:
     """Fetch everything obtainable for a slug, degrading rather than failing."""
     result = FetchResult()
     page_instance = client.session.new_page_instance()
+    authenticated_error: LinkedInError | None = None
 
     if client.session.is_authenticated:
         try:
@@ -98,6 +105,7 @@ async def fetch_profile(client: LinkedInClient, slug: str) -> FetchResult:
         except NotFound:
             raise
         except LinkedInError as exc:
+            authenticated_error = exc
             log.warning("Authenticated tiers unavailable for %s: %s", slug, exc)
             result.warn(
                 exc.code,
@@ -125,6 +133,8 @@ async def fetch_profile(client: LinkedInClient, slug: str) -> FetchResult:
         result.warn("public_fallback_disabled", "Public fallback is disabled by configuration.")
 
     if not result.top_card and not result.public_html and not result.rsc_sections:
+        if authenticated_error is not None:
+            raise authenticated_error
         raise NotFound(
             f"Could not retrieve profile {slug!r} through any tier. See warnings for what each "
             f"tier reported."
@@ -148,6 +158,10 @@ async def _fetch_authenticated(
         urn, top_payload = await resolve_urn(client, slug, page_instance=page_instance)
     except NotFound:
         result.warn("resolver_not_found", "Dash resolver found no profile; trying RSC cards.")
+    except SessionExpired:
+        # Do not continue into endpoints that sometimes return public card
+        # fragments even after LinkedIn has explicitly invalidated li_at.
+        raise
     except LinkedInError as exc:
         result.warn(exc.code, f"Dash resolver failed: {exc.message}", "top_card")
     else:

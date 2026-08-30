@@ -86,3 +86,13 @@ def test_skill_names_ignores_unrelated_aria_labels() -> None:
     frames = [{"aria-label": "Open profile photo"}, {"aria-label": "Endorse Python"}]
 
     assert skill_names(frames) == ["Python"]
+
+
+def test_skill_names_supports_plain_text_stream_shape() -> None:
+    frames = [
+        {"text": "Python"},
+        {"stringValue": "Java"},
+        {"metadata": '{"semanticId":""}'},
+    ]
+
+    assert skill_names(frames) == ["Python", "Java"]

@@ -22,8 +22,11 @@ T = TypeVar("T")
 
 
 class TTLCache(Generic[T]):
-    def __init__(self, ttl_seconds: int, max_entries: int = 512) -> None:
+    def __init__(
+        self, ttl_seconds: int, max_entries: int = 512, stale_ttl_seconds: int = 0
+    ) -> None:
         self._ttl = ttl_seconds
+        self._stale_ttl = max(stale_ttl_seconds, 0)
         self._max = max_entries
         self._store: dict[str, tuple[float, T]] = {}
         self._lock = asyncio.Lock()
@@ -35,6 +38,17 @@ class TTLCache(Generic[T]):
                 return None
             expires_at, value = entry
             if time.monotonic() > expires_at:
+                return None
+            return value
+
+    async def get_stale(self, key: str) -> T | None:
+        """Return an expired value while it is inside the stale safety window."""
+        async with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if time.monotonic() > expires_at + self._stale_ttl:
                 del self._store[key]
                 return None
             return value
@@ -64,7 +78,9 @@ class TTLCache(Generic[T]):
 
     def _evict_expired_locked(self) -> None:
         now = time.monotonic()
-        for key in [k for k, (exp, _) in self._store.items() if exp < now]:
+        for key in [
+            k for k, (exp, _) in self._store.items() if exp + self._stale_ttl < now
+        ]:
             del self._store[key]
 
     @property

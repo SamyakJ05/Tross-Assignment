@@ -9,15 +9,12 @@ services:
     healthCheckPath: /v1/health
 
     envVars:
-      # Every secret is set in the Render dashboard, never in this file.
-      # sync: false keeps them out of the repo and out of blueprint syncs.
-      - key: API_KEYS
-        sync: false
-
       - key: PYTHON_VERSION
         value: "3.12.7"
       - key: CACHE_TTL_SECONDS
         value: "900"
+      - key: CACHE_STALE_TTL_SECONDS
+        value: "86400"
       - key: MIN_REQUEST_INTERVAL_SECONDS
         value: "2.5"
       - key: ENABLE_PUBLIC_FALLBACK

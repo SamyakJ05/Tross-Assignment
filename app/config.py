@@ -27,20 +27,16 @@ class Settings(BaseSettings):
     linkedin_profile_components_verified_on: date | None = None
     linkedin_rsc_application_version: str = "0.2.7003"
 
-    # --- API access -------------------------------------------------------
-    api_keys: str = ""
-
     # --- Behaviour --------------------------------------------------------
     cache_ttl_seconds: int = 900
+    cache_stale_ttl_seconds: int = 86400
     min_request_interval_seconds: float = 2.5
     enable_public_fallback: bool = True
     log_level: str = "INFO"
 
     # --- Per-caller rate limiting -----------------------------------------
-    # The Pacer above throttles this process's total outbound volume to
-    # LinkedIn; it does not stop one caller from consuming that entire
-    # shared budget alone by requesting many distinct profiles. This caps
-    # each API key independently.
+    # The Pacer above throttles total outbound volume; this caps each client
+    # IP independently without asking the caller for a credential.
     rate_limit_per_minute: int = 20
     rate_limit_window_seconds: float = 60.0
 
@@ -72,10 +68,6 @@ class Settings(BaseSettings):
         if not v.startswith('"'):
             v = f'"{v}"'
         return v
-
-    @property
-    def api_key_set(self) -> frozenset[str]:
-        return frozenset(k.strip() for k in self.api_keys.split(",") if k.strip())
 
     @property
     def has_session(self) -> bool:

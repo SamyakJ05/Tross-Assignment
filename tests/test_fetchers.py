@@ -8,7 +8,7 @@ import pytest
 
 import app.linkedin.fetchers as fetchers
 from app.config import Settings
-from app.linkedin.errors import UnexpectedRedirect
+from app.linkedin.errors import SessionExpired, UnexpectedRedirect
 from app.linkedin.queries import Query
 from app.models.envelope import Tier
 
@@ -106,6 +106,36 @@ async def test_rsc_data_survives_a_dash_resolver_redirect(
     assert result.rsc_sections == {"experience": ["RSC role"]}
     assert [warning.code for warning in result.warnings] == ["unexpected_redirect"]
     assert attempts[0] == "dash"
+
+
+@pytest.mark.asyncio
+async def test_expired_session_stops_before_rsc_fragments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = fetchers.FetchResult()
+    rsc_called = False
+
+    async def expired(*_: object, **__: object) -> tuple[str, dict]:
+        raise SessionExpired("expired")
+
+    async def fake_rsc(*_: object) -> list[object]:
+        nonlocal rsc_called
+        rsc_called = True
+        return []
+
+    monkeypatch.setattr(fetchers, "resolve_urn", expired)
+    monkeypatch.setattr(fetchers, "fetch_profile_component", fake_rsc)
+
+    settings = Settings(linkedin_li_at="expired", linkedin_jsessionid="ajax:123")
+    with pytest.raises(SessionExpired):
+        await fetchers._fetch_authenticated(
+            type("Client", (), {"settings": settings})(),
+            "fixture-person",
+            "page",
+            result,
+        )
+
+    assert rsc_called is False
 
 
 @pytest.mark.asyncio

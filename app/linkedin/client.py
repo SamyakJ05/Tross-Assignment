@@ -217,6 +217,21 @@ class LinkedInClient:
             )
 
         if status in (301, 302, 303, 307, 308):
+            # LinkedIn invalidates an expired li_at cookie by redirecting the
+            # request to itself while sending a deletion Set-Cookie. Treating
+            # this as an endpoint-contract redirect lets thin RSC fragments
+            # masquerade as an authenticated success.
+            deleting_li_at = any(
+                value.lower().startswith("li_at=")
+                and ("max-age=0" in value.lower() or "01-jan-1970" in value.lower())
+                for value in resp.headers.get_list("set-cookie")
+            )
+            if deleting_li_at:
+                raise SessionExpired(
+                    "LinkedIn invalidated the backend li_at session. Replace LINKEDIN_LI_AT "
+                    "with a fresh cookie from an authorized browser session.",
+                    status=status,
+                )
             raise UnexpectedRedirect(
                 f"LinkedIn redirected a data request to {location!r}. The endpoint contract, "
                 f"session context, or persisted-query route is no longer valid for this "

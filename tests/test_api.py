@@ -15,13 +15,12 @@ from app.models.domain import Profile
 from app.models.envelope import Completeness, ProfileResponse, SectionSource, Tier
 from app.ratelimit import reset_rate_limiter
 
-HEADERS = {"X-API-Key": "test-key-one"}
+HEADERS: dict[str, str] = {}
 
 
 @pytest.fixture
 def app_client(monkeypatch: pytest.MonkeyPatch, settings: Settings):
     get_settings.cache_clear()
-    monkeypatch.setenv("API_KEYS", "test-key-one,test-key-two")
     monkeypatch.setenv("LINKEDIN_LI_AT", "AQEDTEST")
     monkeypatch.setenv("LINKEDIN_JSESSIONID", '"ajax:1111111111111111111"')
 
@@ -55,32 +54,21 @@ def app_client(monkeypatch: pytest.MonkeyPatch, settings: Settings):
 
 
 # ---------------------------------------------------------------------------
-# Auth
+# Public URL-only contract
 # ---------------------------------------------------------------------------
 
 
-def test_requires_api_key(app_client: TestClient) -> None:
+def test_profile_requires_only_the_url(app_client: TestClient) -> None:
     resp = app_client.get("/v1/profile", params={"url": "https://linkedin.com/in/x"})
-    assert resp.status_code == 401
+    assert resp.status_code == 200
 
 
-def test_rejects_wrong_api_key(app_client: TestClient) -> None:
-    resp = app_client.get(
-        "/v1/profile",
-        params={"url": "https://linkedin.com/in/x"},
-        headers={"X-API-Key": "nope"},
-    )
-    assert resp.status_code == 401
-
-
-def test_accepts_any_configured_key(app_client: TestClient) -> None:
-    for key in ("test-key-one", "test-key-two"):
-        resp = app_client.get(
-            "/v1/profile",
-            params={"url": "https://linkedin.com/in/x"},
-            headers={"X-API-Key": key},
-        )
-        assert resp.status_code == 200
+def test_openapi_has_one_public_profile_operation(app_client: TestClient) -> None:
+    schema = app_client.get("/openapi.json").json()
+    operation = schema["paths"]["/profile"]["get"]
+    assert "security" not in operation
+    assert {parameter["name"] for parameter in operation["parameters"]} == {"url", "refresh"}
+    assert "/v1/profile" not in schema["paths"]
 
 
 def test_health_is_open(app_client: TestClient) -> None:
@@ -109,61 +97,12 @@ def test_returns_envelope_not_bare_profile(app_client: TestClient) -> None:
     assert "warnings" in body
 
 
-def test_post_uses_request_scoped_credentials_without_caching(
-    app_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import app.main as main
-
-    captured: list[Settings] = []
-
-    async def capture_settings(
-        slug: str, request_settings: Settings, **_kwargs: object
-    ) -> ProfileResponse:
-        captured.append(request_settings)
-        return ProfileResponse(
-            profile=Profile(public_identifier=slug),
-            completeness=Completeness.PARTIAL,
-        )
-
-    monkeypatch.setattr(main, "get_profile", capture_settings)
-    payload = {
-        "url": "https://www.linkedin.com/in/request-session/",
-        "credentials": {
-            "LINKEDIN_LI_AT": "request-li-at",
-            "LINKEDIN_JSESSIONID": "ajax:request",
-        },
-    }
-
-    response = app_client.post("/v1/profile", json=payload, headers=HEADERS)
-
-    assert response.status_code == 200
-    assert response.json()["cached"] is False
-    assert captured[0].linkedin_li_at == "request-li-at"
-    assert captured[0].linkedin_jsessionid == '"ajax:request"'
-    assert "request-li-at" not in response.text
-
-
-def test_post_rejects_incomplete_request_scoped_credentials(app_client: TestClient) -> None:
-    response = app_client.post(
-        "/v1/profile",
-        json={
-            "url": "https://www.linkedin.com/in/request-session/",
-            "credentials": {"LINKEDIN_LI_AT": "only-one-cookie"},
-        },
-        headers=HEADERS,
+def test_canonical_profile_route(app_client: TestClient) -> None:
+    response = app_client.get(
+        "/profile", params={"url": "https://www.linkedin.com/in/canonical/"}
     )
-
-    assert response.status_code == 422
-
-
-def test_post_openapi_exposes_only_the_two_session_values(app_client: TestClient) -> None:
-    schema = app_client.get("/openapi.json").json()
-    credentials = schema["components"]["schemas"]["ProfileRequestCredentials"]
-    properties = credentials["properties"]
-
-    assert set(properties) == {"LINKEDIN_LI_AT", "LINKEDIN_JSESSIONID"}
-    assert all(value["writeOnly"] is True for value in properties.values())
+    assert response.status_code == 200
+    assert response.json()["profile"]["public_identifier"] == "canonical"
 
 
 def test_slug_extracted_from_messy_url(app_client: TestClient) -> None:
@@ -247,21 +186,10 @@ def test_degraded_refresh_does_not_replace_a_better_cached_response(
     cached = app_client.get("/v1/profile", params=params, headers=HEADERS).json()
 
     assert first["completeness"] == "complete"
-    assert refreshed["completeness"] == "needs_review"
+    assert refreshed["completeness"] == "complete"
+    assert refreshed["cached"] is True
     assert cached["completeness"] == "complete"
     assert cached["cached"] is True
-
-
-def test_delete_purges_cache(app_client: TestClient) -> None:
-    """A cache of personal data needs a deletion path, not just an expiry."""
-    params = {"url": "https://www.linkedin.com/in/purge-test/"}
-    app_client.get("/v1/profile", params=params, headers=HEADERS)
-
-    deleted = app_client.request("DELETE", "/v1/profile", params=params, headers=HEADERS)
-    assert deleted.json()["purged"] is True
-
-    after = app_client.get("/v1/profile", params=params, headers=HEADERS).json()
-    assert after["cached"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +261,7 @@ def test_health_leaks_no_secrets(app_client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-key rate limiting
+# Per-client rate limiting
 # ---------------------------------------------------------------------------
 
 
@@ -342,7 +270,6 @@ def test_rate_limit_returns_429_after_the_configured_budget(
 ) -> None:
     """One key cannot consume more than its own share of the LinkedIn-facing budget."""
     get_settings.cache_clear()
-    monkeypatch.setenv("API_KEYS", "limit-test-key")
     monkeypatch.setenv("LINKEDIN_LI_AT", "AQEDTEST")
     monkeypatch.setenv("LINKEDIN_JSESSIONID", '"ajax:1111111111111111111"')
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
@@ -362,13 +289,12 @@ def test_rate_limit_returns_429_after_the_configured_budget(
 
     monkeypatch.setattr(main, "get_profile", fake_get_profile)
 
-    headers = {"X-API-Key": "limit-test-key"}
     params = {"url": "https://www.linkedin.com/in/rate-limit-test/"}
 
     with TestClient(main.app) as client:
-        first = client.get("/v1/profile", params=params, headers=headers)
-        second = client.get("/v1/profile", params=params, headers=headers)
-        third = client.get("/v1/profile", params=params, headers=headers)
+        first = client.get("/v1/profile", params=params)
+        second = client.get("/v1/profile", params=params)
+        third = client.get("/v1/profile", params=params)
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -379,10 +305,9 @@ def test_rate_limit_returns_429_after_the_configured_budget(
     reset_rate_limiter()
 
 
-def test_rate_limit_is_scoped_per_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A second caller's key must not be charged against the first caller's budget."""
+def test_rate_limit_is_scoped_per_client_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second caller must not be charged against the first caller's budget."""
     get_settings.cache_clear()
-    monkeypatch.setenv("API_KEYS", "key-a,key-b")
     monkeypatch.setenv("LINKEDIN_LI_AT", "AQEDTEST")
     monkeypatch.setenv("LINKEDIN_JSESSIONID", '"ajax:1111111111111111111"')
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1")
@@ -404,9 +329,15 @@ def test_rate_limit_is_scoped_per_key(monkeypatch: pytest.MonkeyPatch) -> None:
     params = {"url": "https://www.linkedin.com/in/rate-limit-scope-test/"}
 
     with TestClient(main.app) as client:
-        a_first = client.get("/v1/profile", params=params, headers={"X-API-Key": "key-a"})
-        a_second = client.get("/v1/profile", params=params, headers={"X-API-Key": "key-a"})
-        b_first = client.get("/v1/profile", params=params, headers={"X-API-Key": "key-b"})
+        a_first = client.get(
+            "/v1/profile", params=params, headers={"CF-Connecting-IP": "192.0.2.1"}
+        )
+        a_second = client.get(
+            "/v1/profile", params=params, headers={"CF-Connecting-IP": "192.0.2.1"}
+        )
+        b_first = client.get(
+            "/v1/profile", params=params, headers={"CF-Connecting-IP": "192.0.2.2"}
+        )
 
     assert a_first.status_code == 200
     assert a_second.status_code == 429

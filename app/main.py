@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
-from app.auth import require_api_key
 from app.cache import TTLCache
 from app.config import get_settings
 from app.linkedin.client import Pacer
@@ -22,7 +22,6 @@ from app.linkedin.errors import (
 from app.linkedin.queries import registry_status
 from app.linkedin.resolver import InvalidProfileURL, extract_slug
 from app.models.envelope import ProfileResponse
-from app.models.requests import ProfileRequestWithCredentials
 from app.ratelimit import enforce_rate_limit
 from app.service import get_profile
 
@@ -45,9 +44,13 @@ app = FastAPI(
     ),
 )
 
-_cache: TTLCache[ProfileResponse] = TTLCache(settings.cache_ttl_seconds)
-# One Pacer for the whole process, shared by every request regardless of
-# which session (server-managed or caller-supplied) it uses. LinkedIn's
+_cache: TTLCache[ProfileResponse] = TTLCache(
+    settings.cache_ttl_seconds,
+    stale_ttl_seconds=settings.cache_stale_ttl_seconds,
+)
+_profile_locks: dict[str, asyncio.Lock] = {}
+_profile_locks_guard = asyncio.Lock()
+# One Pacer for the whole process, shared by every request. LinkedIn's
 # reputation signal is per outbound IP, not per session, so pacing must be
 # global here rather than reset for each incoming request. See Pacer's
 # docstring in app/linkedin/client.py.
@@ -96,10 +99,53 @@ async def _linkedin_error_handler(_, exc: LinkedInError) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
+async def _lock_for(slug: str) -> asyncio.Lock:
+    async with _profile_locks_guard:
+        return _profile_locks.setdefault(slug, asyncio.Lock())
+
+
+async def _profile_response(url: str, refresh: bool) -> ProfileResponse:
+    try:
+        slug = extract_slug(url)
+    except InvalidProfileURL as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    cached = await _cache.get(slug)
+    if cached is not None and not refresh:
+        return cached.model_copy(update={"cached": True})
+
+    # Coalesce simultaneous misses for the same profile. Without this, one
+    # Swagger double-click can launch two identical LinkedIn request chains.
+    lock = await _lock_for(slug)
+    async with lock:
+        cached = await _cache.get(slug)
+        if cached is not None and not refresh:
+            return cached.model_copy(update={"cached": True})
+
+        stale = await _cache.get_stale(slug)
+        try:
+            result = await get_profile(slug, settings, pacer=_pacer)
+        except LinkedInError:
+            if stale is not None:
+                log.warning("Serving stale cached profile for %s after upstream failure", slug)
+                return stale.model_copy(update={"cached": True})
+            raise
+
+        if stale is not None and _response_quality(result) < _response_quality(stale):
+            log.warning("Serving stale cached profile for %s instead of degraded refresh", slug)
+            return stale.model_copy(update={"cached": True})
+
+        await _cache.set(slug, result)
+        return result
+
+
 @app.get(
-    "/v1/profile",
+    "/profile",
     response_model=ProfileResponse,
-    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+    dependencies=[Depends(enforce_rate_limit)],
     summary="Fetch a LinkedIn profile as structured JSON",
 )
 async def profile(
@@ -116,61 +162,18 @@ async def profile(
         description="Bypass the cache and fetch from LinkedIn.",
     ),
 ) -> ProfileResponse:
-    try:
-        slug = extract_slug(url)
-    except InvalidProfileURL as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
-        ) from exc
-
-    cached = await _cache.get(slug)
-    if cached is not None and not refresh:
-        return cached.model_copy(update={"cached": True})
-
-    result = await get_profile(slug, settings, pacer=_pacer)
-    if cached is None or _response_quality(result) >= _response_quality(cached):
-        await _cache.set(slug, result)
-    return result
+    return await _profile_response(url, refresh)
 
 
-@app.post(
+@app.get(
     "/v1/profile",
     response_model=ProfileResponse,
-    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
-    summary="Fetch a LinkedIn profile with caller-provided credentials",
+    dependencies=[Depends(enforce_rate_limit)],
+    include_in_schema=False,
 )
-async def profile_with_credentials(payload: ProfileRequestWithCredentials) -> ProfileResponse:
-    """Use a caller-owned session once, without logging or caching its secret values."""
-    try:
-        slug = extract_slug(payload.url)
-    except InvalidProfileURL as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
-        ) from exc
-
-    return await get_profile(slug, payload.credentials.apply_to(settings), pacer=_pacer)
-
-
-@app.delete(
-    "/v1/profile",
-    dependencies=[Depends(require_api_key)],
-    summary="Drop a cached profile",
-)
-async def purge(url: str = Query(...)) -> dict[str, object]:
-    """Remove a profile from the cache.
-
-    A cache of personal data needs a deletion path, not just an expiry.
-    """
-    try:
-        slug = extract_slug(url)
-    except InvalidProfileURL as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
-        ) from exc
-    return {"purged": await _cache.purge(slug), "public_identifier": slug}
+async def profile_v1_alias(url: str = Query(...), refresh: bool = Query(False)) -> ProfileResponse:
+    """Backward-compatible alias for clients using the original route."""
+    return await _profile_response(url, refresh)
 
 
 @app.get("/v1/health", summary="Service and upstream health")
@@ -214,5 +217,6 @@ async def root() -> dict[str, str]:
     return {
         "service": "linkedin-profile-api",
         "docs": "/docs",
+        "profile": "/profile?url=https://www.linkedin.com/in/example/",
         "health": "/v1/health",
     }

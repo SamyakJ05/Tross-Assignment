@@ -149,6 +149,23 @@ def test_ordinary_redirect_is_reported_explicitly(client: LinkedInClient) -> Non
     assert "https://www.linkedin.com/feed/" in exc.value.message
 
 
+def test_li_at_deletion_redirect_is_session_expired(client: LinkedInClient) -> None:
+    """LinkedIn invalidates an expired session with a self-redirect and cookie deletion."""
+    with pytest.raises(SessionExpired, match="fresh cookie"):
+        client._classify(
+            _response(
+                302,
+                headers={
+                    "location": "https://www.linkedin.com/voyager/api/identity/dash/profiles",
+                    "set-cookie": (
+                        "li_at=; Path=/; Domain=.www.linkedin.com; "
+                        "Expires=Thu, 01-Jan-1970 00:00:00 GMT; Max-Age=0"
+                    ),
+                },
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # The dangerous rung: 200 responses that are not successes
 # ---------------------------------------------------------------------------
