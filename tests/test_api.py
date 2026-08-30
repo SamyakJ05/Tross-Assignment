@@ -85,6 +85,20 @@ def test_openapi_documents_success_and_typed_failures(app_client: TestClient) ->
     ].endswith("/ErrorResponse")
 
 
+def test_openapi_marks_request_scoped_session_values_as_secrets(
+    app_client: TestClient,
+) -> None:
+    schema = app_client.get("/openapi.json").json()
+    operation = schema["paths"]["/profile/with-session"]["post"]
+    request_schema = schema["components"]["schemas"]["SessionProfileRequest"]
+
+    assert operation["operationId"] == "getLinkedInProfileWithSession"
+    assert operation["tags"] == ["Profiles"]
+    assert request_schema["properties"]["li_at"]["writeOnly"] is True
+    assert request_schema["properties"]["li_at"]["format"] == "password"
+    assert request_schema["properties"]["jsessionid"]["writeOnly"] is True
+
+
 def test_health_is_open(app_client: TestClient) -> None:
     """An uptime check must not need a credential."""
     assert app_client.get("/v1/health").status_code == 200
@@ -154,6 +168,70 @@ def test_company_url_rejected(app_client: TestClient) -> None:
         headers=HEADERS,
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Request-scoped LinkedIn session
+# ---------------------------------------------------------------------------
+
+
+def test_request_scoped_session_is_forwarded_once_and_never_returned(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.main as main
+
+    captured: list[Settings] = []
+
+    async def capture_settings(
+        slug: str,
+        request_settings: Settings,
+        **_kwargs: object,
+    ) -> ProfileResponse:
+        captured.append(request_settings)
+        return ProfileResponse(
+            profile=Profile(public_identifier=slug, full_name="Asha Raman"),
+            completeness=Completeness.COMPLETE,
+        )
+
+    monkeypatch.setattr(main, "get_profile", capture_settings)
+    payload = {
+        "url": "https://www.linkedin.com/in/request-session-test/",
+        "li_at": "CALLER_PRIVATE_LI_AT",
+        "jsessionid": "ajax:987654321",
+    }
+
+    first = app_client.post("/profile/with-session", json=payload)
+    second = app_client.post("/profile/with-session", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["cached"] is False
+    assert second.json()["cached"] is False
+    assert len(captured) == 2  # no shared cache or request coalescing
+    assert captured[0].linkedin_li_at == "CALLER_PRIVATE_LI_AT"
+    assert captured[0].linkedin_jsessionid == '"ajax:987654321"'
+    assert main.settings.linkedin_li_at == "AQEDTEST"
+    assert "CALLER_PRIVATE_LI_AT" not in first.text
+    assert "ajax:987654321" not in first.text
+
+
+def test_request_scoped_session_rejects_blank_secrets_without_echoing_them(
+    app_client: TestClient,
+) -> None:
+    response = app_client.post(
+        "/profile/with-session",
+        json={
+            "url": "https://www.linkedin.com/in/example/",
+            "li_at": " ",
+            "jsessionid": "ajax:123",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "validation_error"
+    assert response.json()["details"][0]["location"] == "body.li_at"
+    assert '"input"' not in response.text
 
 
 # ---------------------------------------------------------------------------

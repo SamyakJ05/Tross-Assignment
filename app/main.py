@@ -23,6 +23,7 @@ from app.linkedin.errors import (
 from app.linkedin.queries import registry_status
 from app.linkedin.resolver import InvalidProfileURL, extract_slug
 from app.models.envelope import ErrorResponse, ProfileResponse
+from app.models.requests import SessionProfileRequest
 from app.ratelimit import enforce_rate_limit
 from app.service import get_profile
 
@@ -39,7 +40,7 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "A reverse-engineered LinkedIn profile API built directly on Dash REST and RSC endpoints. "
-        "No browser, no automation driver: raw HTTP with a manually injected session.\n\n"
+        "No browser, no automation driver: raw HTTP with a backend or request-scoped session.\n\n"
         "Every response reports which tier answered and how complete the result is, because "
         "LinkedIn's dominant failure mode is a 200 carrying degraded data rather than an error."
     ),
@@ -342,6 +343,42 @@ async def profile(
     return await _profile_response(url, refresh)
 
 
+@app.post(
+    "/profile/with-session",
+    response_model=ProfileResponse,
+    dependencies=[Depends(enforce_rate_limit)],
+    summary="Fetch a profile with a caller-supplied LinkedIn session",
+    description=(
+        "Use ephemeral li_at and JSESSIONID cookie values for one direct fetch. Credentials are "
+        "accepted only in the HTTPS request body, are not logged or returned, and are discarded "
+        "when the request ends. This route bypasses the shared cache so one session's visible "
+        "profile data cannot be served to another caller."
+    ),
+    operation_id="getLinkedInProfileWithSession",
+    tags=["Profiles"],
+    responses=_PROFILE_RESPONSES,
+)
+async def profile_with_session(body: SessionProfileRequest) -> ProfileResponse:
+    try:
+        slug = extract_slug(body.url)
+    except InvalidProfileURL as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    # Re-validate a complete Settings object so JSESSIONID receives the same
+    # quote normalization as an environment-provided secret. This object and
+    # its LinkedInClient live only for this request and are never cached.
+    values = settings.model_dump()
+    values.update(
+        linkedin_li_at=body.li_at.get_secret_value(),
+        linkedin_jsessionid=body.jsessionid.get_secret_value(),
+    )
+    request_settings = type(settings).model_validate(values)
+    return await get_profile(slug, request_settings, pacer=_pacer)
+
+
 @app.get(
     "/v1/profile",
     response_model=ProfileResponse,
@@ -397,5 +434,6 @@ async def root() -> dict[str, str]:
         "service": "linkedin-profile-api",
         "docs": "/docs",
         "profile": "/profile?url=https://www.linkedin.com/in/example/",
+        "profile_with_session": "/profile/with-session",
         "health": "/v1/health",
     }

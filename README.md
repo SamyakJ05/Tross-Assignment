@@ -12,12 +12,13 @@ The implementation uses two currently observed LinkedIn request families:
   and languages.
 
 Browser DevTools was used only while developing the request contracts. The deployed API and CLI make
-ordinary HTTP requests with the server's two session values supplied through environment variables.
+ordinary HTTP requests using either the server-managed session or an optional caller session supplied to
+one POST request.
 
 **Live deployment:** https://linkedin-profile-api-z73g.onrender.com. Interactive docs are at
 [`/docs`](https://linkedin-profile-api-z73g.onrender.com/docs), and health check at
-[`/v1/health`](https://linkedin-profile-api-z73g.onrender.com/v1/health). A caller only supplies the
-LinkedIn profile URL; LinkedIn session credentials stay in the backend.
+[`/v1/health`](https://linkedin-profile-api-z73g.onrender.com/v1/health). The normal route needs only a
+LinkedIn profile URL; the request-scoped fallback accepts a caller session when the backend cookie expires.
 
 ### Try the deployed API
 
@@ -48,6 +49,8 @@ Later requests for the same profile are served from the 15-minute cache.
   rate limit prevents one caller from consuming the public API budget.
 - **Contract-first failure handling:** invalid input, caller throttling, upstream denial, checkpoints, and
   expired sessions have stable JSON errors and documented HTTP statuses.
+- **Isolated caller fallback:** optional session cookies are accepted only in a POST body, used for one
+  uncached lookup, and discarded without changing the server-managed session.
 - **Offline verification:** sanitized representative fixtures exercise the full parsing pipeline without
   requiring LinkedIn credentials in CI.
 
@@ -84,7 +87,8 @@ LINKEDIN_LI_AT=
 LINKEDIN_JSESSIONID=
 ```
 
-The API constructs LinkedIn request headers from these backend-only values. Callers never send them.
+The API constructs LinkedIn request headers from these backend-only values for the normal `GET /profile`
+route. A separate POST route can use caller-supplied values for one uncached lookup.
 
 ### Run the HTTP API
 
@@ -140,7 +144,38 @@ Then use the same `curl` command above.
 | `refresh` | No | Bypass the cache and attempt a new upstream fetch |
 
 `GET /v1/profile` remains as a hidden backward-compatible alias. The public OpenAPI page exposes only
-the canonical URL-only operation above.
+the canonical URL-only GET operation and the explicit request-scoped POST operation below.
+
+### `POST /profile/with-session`
+
+Use this fallback if the server-managed session returns `session_expired`. It accepts credentials only in
+the HTTPS JSON body; never place LinkedIn cookies in a URL or query string.
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data-binary @- \
+  'https://linkedin-profile-api-z73g.onrender.com/profile/with-session' <<'JSON'
+{
+  "url": "https://www.linkedin.com/in/example/",
+  "li_at": "paste-your-li_at-cookie",
+  "jsessionid": "paste-your-JSESSIONID-cookie"
+}
+JSON
+```
+
+Request behavior:
+
+- `li_at` and `jsessionid` are required and appear as write-only password fields in Swagger.
+- `JSESSIONID` may be supplied with or without its browser-cookie quotes.
+- Credentials are held only by the request-scoped client and are not returned or written to the cache.
+- The profile response also bypasses the shared cache, preventing one caller's LinkedIn visibility from
+  becoming another caller's cached response.
+- The route still uses the process-wide LinkedIn pacer and per-client public API rate limit.
+
+Session cookies grant access as the LinkedIn account that owns them. Use this route only on a deployment
+you trust, preferably with a dedicated challenge account, and replace or invalidate the cookies afterward.
 
 Errors use one envelope across input validation, caller throttling, and LinkedIn failures:
 
@@ -211,7 +246,8 @@ do not count as health warnings. The endpoint never exposes session values.
 
 ## Approach
 
-1. Validate the profile URL and derive its public identifier.
+1. Validate the profile URL and derive its public identifier. Select either the server-managed session or
+   an ephemeral caller session; caller-scoped lookups never touch the shared cache.
 2. Attempt Dash REST first for the top card. This preserves the tested identity request order before
    detailed cards are requested.
 3. Request three RSC profile cards directly over HTTP: experience, above activity, and below activity.
@@ -237,9 +273,10 @@ uv run pytest -q
 uv build
 ```
 
-The suite includes the public URL-only and OpenAPI contracts, cache behavior, URL validation, stable error
-envelopes, session header handling, RSC card and detail-pager requests, skills and language parsing, promotion
-grouping, mapper behavior, CLI output, and upstream error classification.
+The suite includes the public URL-only and request-scoped session contracts, secret-safe OpenAPI schemas,
+cache isolation, URL validation, stable error envelopes, session header handling, RSC card and detail-pager
+requests, skills and language parsing, promotion grouping, mapper behavior, CLI output, and upstream error
+classification.
 
 Before submitting:
 
@@ -294,7 +331,9 @@ Render supplies `PORT`; the start command binds to it automatically. Callers pro
 ## Security
 
 `.env`, virtual environments, build artifacts, and OS metadata are ignored by Git. LinkedIn session values
-are backend-only and are never returned from `/v1/health`, logged by the application, or included in the
-repository. The public endpoint is rate-limited by client IP.
+are never returned from `/v1/health`, logged by the application, or included in the repository. Caller
+sessions are accepted only in the `POST /profile/with-session` body, stored only in request-local memory,
+excluded from shared caching, and discarded with the upstream client. Both profile routes are rate-limited
+by client IP.
 
 Built for the Tross Software Engineer hiring challenge.
